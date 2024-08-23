@@ -1,0 +1,24 @@
+@use "../abstracts/fonts" as *;
+
+//$baseLineHeight: 2.6rem;
+
+html {
+  // standard root-font-size of 16px is set to 10px (16 * 0,625 = 10)
+  // so that it's easier to work with rem:
+  // 1rem = 10px, 1.5rem = 15px, 2.1rem = 21px, ...
+  font-size: 62.5%;
+}
+
+.body {
+  font-family: "Eurostile LT Std", monospace;
+  @media only screen and (max-width: 600px) {
+    font-size: 1.6rem;
+    line-height: 1.2;
+    //line-height: $baseLineHeight;
+  }
+  @media only screen and (min-width: 601px) {
+    font-size: 1.8rem;
+    line-height: 1.2;
+    //line-height: $baseLineHeight * 1.15;
+  }
+}
