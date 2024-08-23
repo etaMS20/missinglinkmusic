@@ -5,15 +5,16 @@
   height: 100vh;
   height: 100svh;
 
-  background-image: url("../img/stripes.gif");
-  background-repeat: repeat;
-
   .page-container {
+    width: 100%;
+    height: 100%;
+
     display: flex;
     justify-content: center;
     align-items: center;
-    width: 100%;
-    height: 100%;
+
+    background-image: url("../img/stripes.gif");
+    background-repeat: repeat;
 
     .logo-container {
       display: flex;

@@ -1,0 +1,52 @@
+.text-area {
+  position: fixed;
+  left: 0;
+  height: 50px;
+
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+
+  background-image: url("../img/construction-area.png");
+  background-repeat: repeat;
+
+  &--top {
+    top: 0;
+  }
+
+  &--bottom {
+    bottom: 0;
+  }
+}
+
+.moving-text {
+  font-family: "Eurostile LT Std Demi Oblique", monospace;
+  font-size: 2rem;
+  position: relative;
+}
+
+.move-right-to-left {
+  animation: right-to-left 120s linear infinite;
+}
+
+.move-left-to-right {
+  animation: left-to-right 120s linear infinite;
+}
+
+@keyframes right-to-left {
+  from {
+    transform: translateX(0%);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes left-to-right {
+  from {
+    transform: translateX(-50%);
+  }
+  to {
+    transform: translateX(0%);
+  }
+}
