@@ -22,7 +22,6 @@
       align-items: center;
       width: 300px;
       height: 150px;
-
       margin: auto;
 
       background: rgba(255, 255, 255, 0.9);
@@ -30,6 +29,25 @@
       .logo {
         width: 250px;
       }
+    }
+
+    .registration-container {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 700px;
+      height: 320px;
+
+      @media only screen and (max-width: 600px) {
+        margin-left: 1rem;
+        margin-right: 1rem;
+      }
+
+      @media only screen and (min-width: 601px) {
+        margin: auto;
+      }
+
+      background: rgba(255, 255, 255, 0.9);
     }
   }
 }
