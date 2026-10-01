@@ -1,7 +1,8 @@
 // Port of the retro-art-gallery R3F scene to plain three.js.
 import * as THREE from 'three';
-import { group, labelTexture, mat, mesh, pointLight, type V3 } from './build';
+import { group, labelTexture, mat, mesh, meterPlane, pointLight, type V3 } from './build';
 import { ITEMS, setFill, STARTER_ITEMS, type ItemId } from './items';
+import { amp, br218, evo2, f118, brickTexture, concreteTexture, technics1200, usmHaller, xone92 } from './club';
 
 const PI = Math.PI;
 const MOVE_SPEED = 3;
@@ -18,6 +19,12 @@ const DOOR_W = 1.6; // doorway and corridor width
 const DOOR_H = 2.6;
 const CORRIDOR_LEN = 12;
 const CORRIDOR_END = 5 + CORRIDOR_LEN;
+// living room with a big PA, off the corridor's left side (walking away from the gallery)
+const CLUB = { x0: DOOR_W / 2, x1: DOOR_W / 2 + 9, z0: 6.5, z1: 15.5, h: 3.6 };
+const CLUB_DOOR_Z = 11;
+const TABLE_H = 0.74;
+const BOUNCE = 0.8; // strength of the living room's fake bounce light
+const SOUNDCLOUD = 'https://soundcloud.com/missinglinkdarmstadt';
 
 const artworks = [
     { title: 'Sternennacht', artist: 'Vincent van Gogh', year: '1889', description: 'Ein ikonisches Meisterwerk des Post-Impressionismus, das den Nachthimmel über Saint-Rémy-de-Provence zeigt.', position: [-4.9, 2, 0], rotation: [0, PI / 2, 0], image: '/art/starry-night.jpg' },
@@ -29,7 +36,12 @@ const artworks = [
 ] as { title: string; artist: string; year: string; description: string; position: V3; rotation: V3; image: string }[];
 type Artwork = (typeof artworks)[number];
 
-const lampPositions: V3[] = [[3.5, 0, 3.5], [-3.5, 0, 3.5], [3.5, 0, -3.5], [-3.5, 0, -3.5]];
+// floor lamps as [position, light intensity, range (0 = unlimited)]; the last two light the living room
+const lampDefs: [V3, number, number][] = [
+    ...([[3.5, 0, 3.5], [-3.5, 0, 3.5], [3.5, 0, -3.5], [-3.5, 0, -3.5]] as V3[]).map((p): [V3, number, number] => [p, 0.9, 6]),
+    [[CLUB.x1 - 0.9, 0, CLUB_DOOR_Z - 2.1], 8, 0],
+    [[3.3, 0, CLUB_DOOR_Z + 1.6], 4, 0], // beside the sofa
+];
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -79,11 +91,17 @@ async function start() {
     for (const [pos, rotY, color] of [[[0, 2.5, -5], 0, '#4a3f5c'], [[-5, 2.5, 0], PI / 2, '#524560'], [[5, 2.5, 0], -PI / 2, '#524560']] as [V3, number, string][]) {
         mesh(scene, wallGeo, mat(color, { roughness: 0.85 }), pos, [0, rotY, 0], 'receive');
     }
-    // front wall, built around the doorway; double-sided so the corridor sees it too
-    const frontMat = mat('#4a3f5c', { roughness: 0.85, side: THREE.DoubleSide });
-    const sideW = 5 - DOOR_W / 2;
-    for (const sx of [-1, 1]) mesh(scene, new THREE.PlaneGeometry(sideW, 5), frontMat, [sx * (DOOR_W / 2 + sideW / 2), 2.5, 5], [0, PI, 0], 'receive');
-    mesh(scene, new THREE.PlaneGeometry(DOOR_W, 5 - DOOR_H), frontMat, [0, (5 + DOOR_H) / 2, 5], [0, PI, 0]);
+    // wall of width w and height h with a doorway at local x = doorX; pos is its bottom center
+    function doorWall(parent: THREE.Object3D, w: number, h: number, doorX: number, material: THREE.Material, pos: V3, rotY: number) {
+        const g = group(parent, pos, [0, rotY, 0]);
+        const l = w / 2 + doorX - DOOR_W / 2;
+        const r = w / 2 - doorX - DOOR_W / 2;
+        mesh(g, meterPlane(l, h), material, [-w / 2 + l / 2, h / 2, 0], undefined, 'receive');
+        mesh(g, meterPlane(r, h), material, [w / 2 - r / 2, h / 2, 0], undefined, 'receive');
+        mesh(g, meterPlane(DOOR_W, h - DOOR_H), material, [doorX, (h + DOOR_H) / 2, 0]);
+    }
+    // front wall; double-sided so the corridor sees it too
+    doorWall(scene, 10, 5, 0, mat('#4a3f5c', { roughness: 0.85, side: THREE.DoubleSide }), [0, 0, 5], PI);
 
     // wall trim, bottom and crown
     const trimGeo = new THREE.BoxGeometry(10, 0.3, 0.1);
@@ -122,6 +140,8 @@ async function start() {
     const walkable = [
         [-4.6, 4.6, -4.6, 4.6],
         [-DOOR_W / 2 + PLAYER_R, DOOR_W / 2 - PLAYER_R, 3.9, CORRIDOR_END - 1], // stop short of the exit door so it stays in view
+        [0, CLUB.x0 + 0.5, CLUB_DOOR_Z - DOOR_W / 2 + PLAYER_R, CLUB_DOOR_Z + DOOR_W / 2 - PLAYER_R],
+        [CLUB.x0 + PLAYER_R, CLUB.x1 - PLAYER_R, CLUB.z0 + PLAYER_R, CLUB.z1 - PLAYER_R],
     ];
     const inRects = (rects: number[][], x: number, z: number) => rects.some(([x0, x1, z0, z1]) => x >= x0 && x <= x1 && z >= z0 && z <= z1);
     const onFloor = (x: number, z: number) => inRects(walkable, x, z);
@@ -129,6 +149,8 @@ async function start() {
     const debrisArea = [
         [-4.9, 4.9, -4.9, 4.9],
         [-DOOR_W / 2 + 0.05, DOOR_W / 2 - 0.05, 4.8, CORRIDOR_END - 0.1],
+        [0, CLUB.x0 + 0.2, CLUB_DOOR_Z - DOOR_W / 2 + 0.05, CLUB_DOOR_Z + DOOR_W / 2 - 0.05],
+        [CLUB.x0 + 0.1, CLUB.x1 - 0.1, CLUB.z0 + 0.1, CLUB.z1 - 0.1],
     ];
     const inDebrisArea = (x: number, z: number) => inRects(debrisArea, x, z);
     // Furniture as boxes with a top height: blocks you unless you're above it, then you stand on it.
@@ -143,26 +165,36 @@ async function start() {
 
     for (const x of [-4.5, 4.5]) for (const z of [-4.5, 4.5]) box(x, z, 0.3, 0.3, 5); // pillars
 
-    // black leather couch facing the back wall
+    // collision box given in the frame of an object at (cx, cz) turned by rotY, a multiple of a quarter turn
+    function turnedBox(cx: number, cz: number, rotY: number, lx: number, lz: number, halfW: number, halfD: number, top: number) {
+        const c = Math.round(Math.cos(rotY));
+        const s = Math.round(Math.sin(rotY));
+        box(cx + c * lx + s * lz, cz - s * lx + c * lz, c ? halfW : halfD, c ? halfD : halfW, top);
+    }
+
+    // black leather couch, front facing its local -z
     const leather = mat('#141414', { roughness: 0.35, metalness: 0.15 });
     const darkWood = mat('#3b2a1e', { roughness: 0.6 });
-    const couch = group(scene, [0, 0, 0.5]);
-    mesh(couch, new THREE.BoxGeometry(2.2, 0.22, 0.9), leather, [0, 0.21, 0], undefined, 'cast');
-    mesh(couch, new THREE.BoxGeometry(2.2, 0.6, 0.22), leather, [0, 0.6, 0.34], undefined, 'cast');
-    for (const sx of [-1, 1]) {
-        mesh(couch, new THREE.BoxGeometry(0.2, 0.5, 0.9), leather, [sx, 0.45, 0], undefined, 'cast');
-        mesh(couch, new THREE.BoxGeometry(0.88, 0.16, 0.68), leather, [sx * 0.45, 0.4, -0.08]);
-        mesh(couch, new THREE.BoxGeometry(0.88, 0.42, 0.16), leather, [sx * 0.45, 0.68, 0.16], [-0.15, 0, 0]);
-        for (const sz of [-1, 1]) mesh(couch, new THREE.CylinderGeometry(0.035, 0.03, 0.1, 6), darkWood, [sx, 0.05, sz * 0.38]);
+    function couch(parent: THREE.Object3D, x: number, z: number, rotY: number) {
+        const g = group(parent, [x, 0, z], [0, rotY, 0]);
+        mesh(g, new THREE.BoxGeometry(2.2, 0.22, 0.9), leather, [0, 0.21, 0], undefined, 'cast');
+        mesh(g, new THREE.BoxGeometry(2.2, 0.6, 0.22), leather, [0, 0.6, 0.34], undefined, 'cast');
+        for (const sx of [-1, 1]) {
+            mesh(g, new THREE.BoxGeometry(0.2, 0.5, 0.9), leather, [sx, 0.45, 0], undefined, 'cast');
+            mesh(g, new THREE.BoxGeometry(0.88, 0.16, 0.68), leather, [sx * 0.45, 0.4, -0.08]);
+            mesh(g, new THREE.BoxGeometry(0.88, 0.42, 0.16), leather, [sx * 0.45, 0.68, 0.16], [-0.15, 0, 0]);
+            for (const sz of [-1, 1]) mesh(g, new THREE.CylinderGeometry(0.035, 0.03, 0.1, 6), darkWood, [sx, 0.05, sz * 0.38]);
+            turnedBox(x, z, rotY, sx, 0, 0.1, 0.45, 0.7); // armrests
+        }
+        mesh(g, new THREE.BoxGeometry(0.34, 0.34, 0.12), mat('#b8862b', { roughness: 0.9 }), [-0.68, 0.62, 0.02], [-0.2, 0.3, 0.1]);
+        turnedBox(x, z, rotY, 0, 0, 1.1, 0.45, 0.48); // seat
+        turnedBox(x, z, rotY, 0, 0.34, 1.1, 0.11, 0.9); // backrest
     }
-    mesh(couch, new THREE.BoxGeometry(0.34, 0.34, 0.12), mat('#b8862b', { roughness: 0.9 }), [-0.68, 0.62, 0.02], [-0.2, 0.3, 0.1]);
-    box(0, 0.5, 1.1, 0.45, 0.48); // seat
-    box(0, 0.84, 1.1, 0.11, 0.9); // backrest
-    for (const sx of [-1, 1]) box(sx, 0.5, 0.1, 0.45, 0.7); // armrests
+    couch(scene, 0, 0.5, 0); // facing the back wall
 
     // doorway frame; the entry door stands open against the wall, the exit door is closed
-    function door(z: number, open: boolean) {
-        const g = group(scene, [0, 0, z]);
+    function door(pos: V3, rotY: number, open: boolean) {
+        const g = group(scene, pos, [0, rotY, 0]);
         for (const sx of [-1, 1]) mesh(g, new THREE.BoxGeometry(0.12, DOOR_H, 0.16), darkWood, [sx * (DOOR_W / 2 + 0.06), DOOR_H / 2, -0.05]);
         mesh(g, new THREE.BoxGeometry(DOOR_W + 0.24, 0.12, 0.16), darkWood, [0, DOOR_H + 0.06, -0.05]);
         const leafMat = mat('#5a3d2b', { roughness: 0.55, emissive: '#ffd700', emissiveIntensity: 0 });
@@ -172,25 +204,99 @@ async function start() {
         mesh(hinge, new THREE.SphereGeometry(0.05, 8, 8), mat('#c9a86c', { roughness: 0.3, metalness: 0.7 }), [DOOR_W - 0.15, 1.05, -0.06]);
         return { g, leafMat };
     }
-    door(5, true);
+    door([0, 0, 5], 0, true);
 
     // corridor behind the front wall, exit door at its end
     const corridorMid = (5 + CORRIDOR_END) / 2;
     const CORRIDOR_H = 3;
     mesh(scene, new THREE.PlaneGeometry(DOOR_W, CORRIDOR_LEN), mat('#4a1c1c', { roughness: 0.95 }), [0, 0, corridorMid], [-PI / 2, 0, 0], 'receive');
     mesh(scene, new THREE.PlaneGeometry(DOOR_W, CORRIDOR_LEN), mat('#3d3d5c', { roughness: 0.9 }), [0, CORRIDOR_H, corridorMid], [PI / 2, 0, 0]);
-    for (const sx of [-1, 1]) mesh(scene, new THREE.PlaneGeometry(CORRIDOR_LEN, CORRIDOR_H), mat('#524560', { roughness: 0.85 }), [sx * DOOR_W / 2, CORRIDOR_H / 2, corridorMid], [0, -sx * PI / 2, 0], 'receive');
+    const corridorWall = mat('#524560', { roughness: 0.85 });
+    mesh(scene, new THREE.PlaneGeometry(CORRIDOR_LEN, CORRIDOR_H), corridorWall, [-DOOR_W / 2, CORRIDOR_H / 2, corridorMid], [0, PI / 2, 0], 'receive');
+    doorWall(scene, CORRIDOR_LEN, CORRIDOR_H, CLUB_DOOR_Z - corridorMid, corridorWall, [DOOR_W / 2, 0, corridorMid], -PI / 2);
     mesh(scene, new THREE.PlaneGeometry(DOOR_W, CORRIDOR_H), mat('#4a3f5c', { roughness: 0.85 }), [0, CORRIDOR_H / 2, CORRIDOR_END], [0, PI, 0]);
     for (const f of [0.3, 0.75]) {
         const z = 5 + CORRIDOR_LEN * f;
         mesh(scene, new THREE.BoxGeometry(0.5, 0.05, 0.5), mat('#fffae6', { emissive: '#ffeaa7', emissiveIntensity: 0.8 }), [0, CORRIDOR_H - 0.03, z]);
         pointLight(scene, '#ffe8c0', 1.2, 8, [0, CORRIDOR_H - 0.3, z]);
     }
-    const exit = door(CORRIDOR_END, false);
+    const exit = door([0, 0, CORRIDOR_END], 0, false);
     const exitDoor = { exit: true, leafMat: exit.leafMat };
     exit.g.userData.target = exitDoor;
     mesh(exit.g, new THREE.BoxGeometry(0.9, 0.25, 0.05), new THREE.MeshBasicMaterial({ color: '#0b3d1a' }), [0, DOOR_H + 0.3, -0.05]);
     mesh(exit.g, new THREE.PlaneGeometry(0.9, 0.17), new THREE.MeshBasicMaterial({ map: labelTexture('AUSGANG', '#4ade80'), transparent: true }), [0, DOOR_H + 0.3, -0.08], [0, PI, 0]);
+
+    // living room. Everything under `club` gets its bounce light, see captureBounce().
+    const club = group(scene);
+    const clubX = (CLUB.x0 + CLUB.x1) / 2;
+    const clubZ = (CLUB.z0 + CLUB.z1) / 2;
+    const clubW = CLUB.x1 - CLUB.x0;
+    const clubD = CLUB.z1 - CLUB.z0;
+    // industrial: brick walls, polished concrete floor, raw concrete ceiling on steel beams
+    const clubWall = mat('#ffffff', { map: brickTexture(), roughness: 0.9 });
+    const concrete = concreteTexture();
+    mesh(club, meterPlane(clubW, clubD), mat('#ffffff', { map: concrete, roughness: 0.25 }), [clubX, 0, clubZ], [-PI / 2, 0, 0], 'receive');
+    mesh(club, meterPlane(clubW, clubD), mat('#6a6a6a', { map: concrete, roughness: 0.9 }), [clubX, CLUB.h, clubZ], [PI / 2, 0, 0]);
+    mesh(club, meterPlane(clubD, CLUB.h), clubWall, [CLUB.x1, CLUB.h / 2, clubZ], [0, -PI / 2, 0], 'receive');
+    mesh(club, meterPlane(clubW, CLUB.h), clubWall, [clubX, CLUB.h / 2, CLUB.z0], [0, 0, 0], 'receive');
+    mesh(club, meterPlane(clubW, CLUB.h), clubWall, [clubX, CLUB.h / 2, CLUB.z1], [0, PI, 0], 'receive');
+    const steel = mat('#2b2d30', { roughness: 0.5, metalness: 0.6 });
+    for (let x = CLUB.x0 + 1.5; x < CLUB.x1; x += 2.5) mesh(club, new THREE.BoxGeometry(0.18, 0.28, clubD), steel, [x, CLUB.h - 0.14, clubZ]);
+    doorWall(club, clubD, CLUB.h, clubZ - CLUB_DOOR_Z, clubWall, [CLUB.x0, 0, clubZ], PI / 2);
+    door([CLUB.x0, 0, CLUB_DOOR_Z], -PI / 2, true);
+    // sofa facing the PA, on a rug
+    couch(club, 3.3, CLUB_DOOR_Z, -PI / 2);
+    mesh(club, new THREE.BoxGeometry(2.4, 0.01, 3.2), mat('#5a3b2e', { roughness: 1 }), [4.95, 0.005, CLUB_DOOR_Z], undefined, 'receive');
+
+    // DJ booth in front of the back wall, the DJ faces the door. Booth-local +z points to the DJ, -z to the room.
+    const [boothX, boothZ] = [CLUB.x1 - 2, clubZ];
+    const booth = group(club, [boothX, 0, boothZ], [0, PI / 2, 0]);
+    const put = <T extends THREE.Object3D>(obj: T, pos: V3, rotY = 0) => {
+        obj.position.set(...pos);
+        obj.rotation.y = rotY;
+        booth.add(obj);
+        return obj;
+    };
+    // collision box in booth-local coordinates (the booth is turned a quarter, so x and z swap)
+    const boothBox = (lx: number, lz: number, halfW: number, halfD: number, top: number) => turnedBox(boothX, boothZ, PI / 2, lx, lz, halfW, halfD, top);
+    put(usmHaller(2, 0.8, TABLE_H), [0, 0, 0]);
+    const xone = xone92();
+    put(xone.g, [0, TABLE_H, 0.05]);
+    const platters = [-0.42, 0.42].map((x) => {
+        const tt = technics1200();
+        put(tt.g, [x, TABLE_H, 0.02]);
+        return tt.platter;
+    });
+    put(amp(), [-1.4, 0, 0], PI);
+    // subs stacked by hand, so slightly off
+    put(f118(), [-2.3, 0, -0.8], PI - 0.02);
+    put(f118(), [-2.27, 0.672, -0.83], PI + 0.05);
+    put(br218(), [-3.1, 0, -0.75], PI - 0.08);
+    boothBox(0, 0, 1, 0.4, TABLE_H + 0.17);
+    boothBox(-1.4, 0, 0.23, 0.25, 0.2);
+    boothBox(-2.3, -0.8, 0.38, 0.27, 1.344);
+    boothBox(-3.1, -0.75, 0.31, 0.32, 1.02);
+    // mixer -> amp -> both subs
+    const cableMat = mat('#0d0d0d', { roughness: 0.7 });
+    const cable = (r: number, pts: V3[]) => mesh(booth, new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p))), 64, r, 6), cableMat);
+    cable(0.005, [[0.03, TABLE_H + 0.05, -0.16], [-0.3, TABLE_H + 0.02, -0.39], [-0.75, 0.02, -0.3], [-1.2, 0.01, 0.35], [-1.35, 0.1, 0.26]]);
+    cable(0.009, [[-1.5, 0.1, 0.26], [-1.7, 0.01, 0.35], [-2.2, 0.01, -0.3], [-2.3, 0.3, -0.56]]);
+    cable(0.009, [[-1.45, 0.12, 0.26], [-1.8, 0.02, 0.3], [-2.4, 0.4, -0.45], [-2.4, 1.0, -0.56]]);
+    cable(0.009, [[-1.55, 0.08, 0.26], [-1.8, 0.01, 0.4], [-2.8, 0.01, 0.1], [-3.1, 0.3, -0.46]]);
+    const mixer = { soundcloud: true, panel: xone.panel };
+    xone.g.userData.target = mixer;
+
+    // Evo 2 tops hung in the back corners left and right of the booth, angled down at the dancefloor
+    const rigging = mat('#3a3a3a', { roughness: 0.5, metalness: 0.6 });
+    for (const z of [CLUB.z0 + 0.6, CLUB.z1 - 0.6]) {
+        const x = CLUB.x1 - 0.6;
+        const g = group(club, [x, 0, z], [0, Math.atan2(clubX - 1 - x, clubZ - z), 0]);
+        const top = evo2();
+        top.position.y = CLUB.h - 0.35 - 0.78;
+        top.rotation.x = 0.15;
+        g.add(top);
+        for (const sx of [-0.2, 0.2]) mesh(g, new THREE.CylinderGeometry(0.01, 0.01, 0.4, 6), rigging, [sx, CLUB.h - 0.2, 0]);
+    }
 
     // central hanging lamp
     const hanging = group(scene, [0, 4.2, 0]);
@@ -240,7 +346,7 @@ async function start() {
 
     // floor lamps
     const glowMat = new THREE.MeshBasicMaterial({ color: '#ffd700', side: THREE.BackSide, transparent: true, depthWrite: false, fog: false });
-    const lamps = lampPositions.map((p) => {
+    const lamps = lampDefs.map(([p, power, range]) => {
         const g = group(scene, p);
         mesh(g, new THREE.CylinderGeometry(0.2, 0.25, 0.2, 8), mat('#2a2a2a', { roughness: 0.6, metalness: 0.4 }), [0, 0.1, 0]);
         mesh(g, new THREE.CylinderGeometry(0.04, 0.04, 1.6, 8), mat('#c9a86c', { roughness: 0.3, metalness: 0.6 }), [0, 0.9, 0]);
@@ -249,7 +355,7 @@ async function start() {
         const bulb = mat('#fff8e7', { emissive: '#ffeaa7', emissiveIntensity: 1.2, roughness: 0.3 });
         mesh(g, new THREE.SphereGeometry(0.1, 8, 8), bulb, [0, 1.65, 0]);
         // intensity 0 instead of removing the light, avoids a shader recompile on toggle
-        const light = pointLight(g, '#fff5e0', 0.9, 6, [0, 1.7, 0]);
+        const light = pointLight(g, '#fff5e0', power, range, [0, 1.7, 0]);
         // glow outline: slightly larger back-face shell, shown while aimed at
         const glow = group(g);
         glow.visible = false;
@@ -257,7 +363,7 @@ async function start() {
         mesh(glow, new THREE.CylinderGeometry(0.07, 0.07, 1.62, 8), glowMat, [0, 0.9, 0]);
         mesh(glow, new THREE.ConeGeometry(0.35, 0.48, 8), glowMat, [0, 1.8, 0]);
         box(p[0], p[2], 0.25, 0.25, 2.1);
-        const lamp = { on: true, shade, bulb, light, glow };
+        const lamp = { on: true, power, shade, bulb, light, glow };
         g.userData.target = lamp;
         return lamp;
     });
@@ -268,7 +374,7 @@ async function start() {
         lamp.shade.emissiveIntensity = on ? 0.3 : 0;
         lamp.bulb.color.set(on ? '#fff8e7' : '#3a3a3a');
         lamp.bulb.emissiveIntensity = on ? 1.2 : 0;
-        lamp.light.intensity = on ? 0.9 : 0;
+        lamp.light.intensity = on ? lamp.power : 0;
     }
 
     // held item and blocky hand, attached to the camera
@@ -299,6 +405,31 @@ async function start() {
     mesh(hand, new THREE.BoxGeometry(0.12, 0.12, 0.3), finger, [-0.15, 0.32, 0]);
     mesh(hand, new THREE.BoxGeometry(0.12, 0.12, 0.3), finger, [0.15, 0.32, 0]);
 
+    // Fake global illumination for the living room: render it into a cube map from its center and light its
+    // materials with that, one more bounce per capture. Static, so recaptured whenever a lamp changes.
+    const cubeRT = new THREE.WebGLCubeRenderTarget(128, { type: THREE.HalfFloatType });
+    const cubeCam = new THREE.CubeCamera(0.1, 30, cubeRT);
+    cubeCam.position.set(clubX, 1.6, clubZ);
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const clubMats = new Set<THREE.MeshStandardMaterial>();
+    club.traverse((o) => {
+        if (o instanceof THREE.Mesh) for (const m of [o.material].flat()) if (m instanceof THREE.MeshStandardMaterial) clubMats.add(m);
+    });
+    let bounce: THREE.WebGLRenderTarget | undefined;
+    function captureBounce() {
+        item.visible = false; // the hand isn't part of the room
+        cubeCam.update(renderer, scene);
+        item.visible = true;
+        const old = bounce;
+        bounce = pmrem.fromCubemap(cubeRT.texture);
+        for (const m of clubMats) {
+            m.envMap = bounce.texture;
+            m.envMapIntensity = BOUNCE;
+            if (!old) m.needsUpdate = true;
+        }
+        old?.dispose();
+    }
+
     // --- controls & UI ----------------------------------------------------
 
     const canvas = renderer.domElement;
@@ -312,7 +443,7 @@ async function start() {
     const held = (...codes: string[]) => codes.some((c) => keys.has(c));
     type Lamp = (typeof lamps)[number];
     type Painting = (typeof paintings)[number];
-    let aimed: Lamp | Painting | typeof exitDoor | undefined;
+    let aimed: Lamp | Painting | typeof exitDoor | typeof mixer | undefined;
     const raycaster = new THREE.Raycaster(undefined, undefined, 0, REACH);
     const screenCenter = new THREE.Vector2();
     // walls and pillars block the ray, the held glass doesn't
@@ -534,8 +665,12 @@ async function start() {
         } else if (e.code === 'KeyE') {
             if (!aimed) {
                 if (!anim) anim = { kind: 'drink', t: 0, next: equipped, released: false, swapped: false };
-            } else if ('glow' in aimed) toggleLamp(aimed);
+            } else if ('glow' in aimed) {
+                toggleLamp(aimed);
+                captureBounce();
+            }
             else if ('artwork' in aimed) openModal(aimed.artwork);
+            else if (aimed === mixer) open(SOUNDCLOUD, '_blank', 'noopener');
             else location.href = '/';
         }
     });
@@ -562,6 +697,7 @@ async function start() {
     await loaded;
     loadingStatus('Bereite Shader vor', 75);
     await nextFrame();
+    captureBounce();
     await renderer.compileAsync(scene, camera); // compile shaders up front, no stutter on the first frames
     loadingStatus('Rendere Szene', 95);
     function loop(t: number) {
@@ -629,7 +765,7 @@ async function start() {
                 hit = true;
             }
             p.y += d.v.y * dt;
-            const ceiling = p.z > 5 ? 3 : 5; // corridor is lower than the room
+            const ceiling = p.x > CLUB.x0 ? CLUB.h : p.z > 5 ? 3 : 5; // corridor is lower than the rooms
             if (p.y > ceiling - 0.1) {
                 p.y = ceiling - 0.1;
                 d.v.y = -Math.abs(d.v.y) * 0.5;
@@ -671,9 +807,11 @@ async function start() {
         }
         for (const l of lamps) l.glow.visible = l === aimed;
         exitDoor.leafMat.emissiveIntensity += ((aimed === exitDoor ? 0.25 : 0) - exitDoor.leafMat.emissiveIntensity) * 0.1;
+        mixer.panel.emissiveIntensity += ((aimed === mixer ? 0.25 : 0) - mixer.panel.emissiveIntensity) * 0.1;
+        for (const p of platters) p.rotation.y -= dt * 3.49; // 33⅓ rpm
         glowMat.opacity = 0.35 + Math.sin(time * 4) * 0.15;
 
-        const text = !aimed ? '' : 'glow' in aimed ? `Lampe ${aimed.on ? 'ausschalten' : 'einschalten'}` : 'artwork' in aimed ? 'Ansehen' : 'Galerie verlassen';
+        const text = !aimed ? '' : 'glow' in aimed ? `Lampe ${aimed.on ? 'ausschalten' : 'einschalten'}` : 'artwork' in aimed ? 'Ansehen' : aimed === mixer ? 'SoundCloud öffnen' : 'Galerie verlassen';
         if (hint.dataset.text !== text) {
             hint.dataset.text = $('hint-text').textContent = text;
             hint.hidden = !text;

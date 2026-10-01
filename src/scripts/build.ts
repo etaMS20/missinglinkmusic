@@ -23,6 +23,14 @@ export function mesh(parent: THREE.Object3D, geo: THREE.BufferGeometry, material
     return m;
 }
 
+// plane whose UVs run in meters, so a tiling texture keeps its scale on any size
+export function meterPlane(w: number, h: number) {
+    const geo = new THREE.PlaneGeometry(w, h);
+    const uv = geo.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * w, uv.getY(i) * h);
+    return geo;
+}
+
 export function pointLight(parent: THREE.Object3D, color: string, intensity: number, distance: number, pos: V3, castShadow = false) {
     const l = new THREE.PointLight(color, intensity, distance);
     l.position.set(...pos);
