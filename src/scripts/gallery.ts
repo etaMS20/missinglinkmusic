@@ -1,0 +1,864 @@
+// Port of the retro-art-gallery R3F scene to plain three.js.
+import * as THREE from 'three';
+import { group, labelTexture, mat, mesh, meterPlane, pointLight, type V3 } from './build';
+import { ITEMS, setFill, STARTER_ITEMS, type ItemId } from './items';
+import { amp, br218, evo2, f118, brickTexture, concreteTexture, technics1200, usmHaller, xone92 } from './club';
+
+const PI = Math.PI;
+const MOVE_SPEED = 3;
+const SPRINT = 1.8; // speed multiplier while Shift is held
+const EYE = 1.6; // eye height above the feet
+const GRAVITY = 20;
+const JUMP_V = 6.3; // ~1m jump, enough for the couch backrest
+const STEP = 0.15; // ledges this low are walked onto without jumping
+const BREAK_FORCE = 16; // kicks harder than this shatter the glass; only reachable while sprinting
+const PAINTING_MAX = 1.6; // longest side of a canvas, frames follow the image ratio
+const REACH = 3.5; // how far the crosshair can interact
+const PLAYER_R = 0.3;
+const DOOR_W = 1.6; // doorway and corridor width
+const DOOR_H = 2.6;
+const CORRIDOR_LEN = 12;
+const CORRIDOR_END = 5 + CORRIDOR_LEN;
+// living room with a big PA, off the corridor's left side (walking away from the gallery)
+const CLUB = { x0: DOOR_W / 2, x1: DOOR_W / 2 + 9, z0: 6.5, z1: 15.5, h: 3.6 };
+const CLUB_DOOR_Z = 11;
+const TABLE_H = 0.74;
+const BOUNCE = 0.8; // strength of the living room's fake bounce light
+const SOUNDCLOUD = 'https://soundcloud.com/missinglinkdarmstadt';
+
+const artworks = [
+    { title: 'Sternennacht', artist: 'Vincent van Gogh', year: '1889', description: 'Ein ikonisches Meisterwerk des Post-Impressionismus, das den Nachthimmel über Saint-Rémy-de-Provence zeigt.', position: [-4.9, 2, 0], rotation: [0, PI / 2, 0], image: '/art/starry-night.jpg' },
+    { title: 'Der Schrei', artist: 'Edvard Munch', year: '1893', description: 'Ein expressionistisches Werk, das existenzielle Angst und die Entfremdung des modernen Menschen darstellt.', position: [4.9, 2, 0], rotation: [0, -PI / 2, 0], image: '/art/the-scream.jpg' },
+    { title: 'Mona Lisa', artist: 'Leonardo da Vinci', year: '1503-1519', description: 'Das berühmteste Porträt der Welt, bekannt für das geheimnisvolle Lächeln der Dargestellten.', position: [0, 2, -4.9], rotation: [0, 0, 0], image: '/art/mona-lisa.jpg' },
+    { title: 'Die Beständigkeit der Erinnerung', artist: 'Salvador Dalí', year: '1931', description: 'Dalís surrealistisches Meisterwerk mit den berühmten schmelzenden Uhren.', position: [-2.5, 2, -4.9], rotation: [0, 0, 0], image: '/art/persistence-of-memory.jpg' },
+    { title: 'Die Große Welle', artist: 'Katsushika Hokusai', year: '1831', description: 'Der berühmte japanische Holzschnitt zeigt eine riesige Welle vor dem Berg Fuji.', position: [2.5, 2, -4.9], rotation: [0, 0, 0], image: '/art/great-wave.jpg' },
+    { title: 'Collage1', artist: 'Wisoir', year: 'unbekannt', description: '', position: [-4.9, 2, -2.5], rotation: [0, PI / 2, 0], image: '/art/willy1.jpg' },
+] as { title: string; artist: string; year: string; description: string; position: V3; rotation: V3; image: string }[];
+type Artwork = (typeof artworks)[number];
+
+// floor lamps as [position, light intensity, range (0 = unlimited)]; the last two light the living room
+const lampDefs: [V3, number, number][] = [
+    ...([[3.5, 0, 3.5], [-3.5, 0, 3.5], [3.5, 0, -3.5], [-3.5, 0, -3.5]] as V3[]).map((p): [V3, number, number] => [p, 0.9, 6]),
+    [[CLUB.x1 - 0.9, 0, CLUB_DOOR_Z - 2.1], 8, 0],
+    [[3.3, 0, CLUB_DOOR_Z + 1.6], 4, 0], // beside the sofa
+];
+
+const $ = (id: string) => document.getElementById(id)!;
+
+// --- scene ----------------------------------------------------------------
+
+const nextFrame = () => new Promise(requestAnimationFrame);
+function loadingStatus(text: string, percent: number) {
+    $('loading-text').textContent = text;
+    $('loading-bar').style.width = `${percent}%`;
+}
+
+async function start() {
+    // let the loading screen paint before the synchronous scene build blocks the thread
+    loadingStatus('Baue Galerie auf', 5);
+    await nextFrame();
+    const container = $('gallery');
+    const renderer = new THREE.WebGLRenderer({ antialias: false });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping; // R3F default, keeps the original look
+    renderer.domElement.className = 'touch-none cursor-grab active:cursor-none';
+    container.prepend(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#3a3a5a');
+    scene.fog = new THREE.Fog('#3a3a5a', 15, 35);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 100);
+    camera.position.set(0, 1.6, 4);
+    scene.add(camera);
+
+    // global lights
+    scene.add(new THREE.AmbientLight('#f5ebe0', 0.6));
+    const hemi = new THREE.HemisphereLight('#fff8f0', '#4a3f5c', 0.5);
+    hemi.position.set(0, 5, 0);
+    scene.add(hemi);
+    pointLight(scene, '#ffeaa7', 2, 0, [0, 4.5, 0], true);
+    for (const [x, z, i] of [[-3, -3, 0.9], [3, -3, 0.9], [0, 3, 0.7], [-3, 3, 0.5], [3, 3, 0.5]]) pointLight(scene, '#fff5e6', i, 0, [x, 3, z]);
+    pointLight(scene, '#ffcc80', 0.4, 0, [0, 0.5, 0]);
+
+    // floor, ceiling, walls
+    mesh(scene, new THREE.PlaneGeometry(10, 10, 20, 20), mat('#5c4033', { roughness: 0.7, metalness: 0.1 }), [0, 0, 0], [-PI / 2, 0, 0], 'receive');
+    mesh(scene, new THREE.PlaneGeometry(10, 10), mat('#6b4c3a', { roughness: 0.8, transparent: true, opacity: 0.4 }), [0, 0.01, 0], [-PI / 2, 0, 0]);
+    mesh(scene, new THREE.PlaneGeometry(10, 10), mat('#3d3d5c', { roughness: 0.9 }), [0, 5, 0], [PI / 2, 0, 0]);
+    const wallGeo = new THREE.PlaneGeometry(10, 5);
+    for (const [pos, rotY, color] of [[[0, 2.5, -5], 0, '#4a3f5c'], [[-5, 2.5, 0], PI / 2, '#524560'], [[5, 2.5, 0], -PI / 2, '#524560']] as [V3, number, string][]) {
+        mesh(scene, wallGeo, mat(color, { roughness: 0.85 }), pos, [0, rotY, 0], 'receive');
+    }
+    // wall of width w and height h with a doorway at local x = doorX; pos is its bottom center
+    function doorWall(parent: THREE.Object3D, w: number, h: number, doorX: number, material: THREE.Material, pos: V3, rotY: number) {
+        const g = group(parent, pos, [0, rotY, 0]);
+        const l = w / 2 + doorX - DOOR_W / 2;
+        const r = w / 2 - doorX - DOOR_W / 2;
+        mesh(g, meterPlane(l, h), material, [-w / 2 + l / 2, h / 2, 0], undefined, 'receive');
+        mesh(g, meterPlane(r, h), material, [w / 2 - r / 2, h / 2, 0], undefined, 'receive');
+        mesh(g, meterPlane(DOOR_W, h - DOOR_H), material, [doorX, (h + DOOR_H) / 2, 0]);
+    }
+    // front wall; double-sided so the corridor sees it too
+    doorWall(scene, 10, 5, 0, mat('#4a3f5c', { roughness: 0.85, side: THREE.DoubleSide }), [0, 0, 5], PI);
+
+    // wall trim, bottom and crown
+    const trimGeo = new THREE.BoxGeometry(10, 0.3, 0.1);
+    const trimMat = mat('#8b7355', { roughness: 0.4, metalness: 0.3 });
+    for (const y of [0.15, 4.85]) {
+        mesh(scene, trimGeo, trimMat, [0, y, -4.95]);
+        mesh(scene, trimGeo, trimMat, [-4.95, y, 0], [0, PI / 2, 0]);
+        mesh(scene, trimGeo, trimMat, [4.95, y, 0], [0, PI / 2, 0]);
+    }
+
+    // ceiling spotlight rails
+    const brassGlow = mat('#c9a86c', { roughness: 0.3, metalness: 0.5, emissive: '#ffd700', emissiveIntensity: 0.3 });
+    for (const x of [-3, 0, 3]) {
+        const g = group(scene, [x, 4.8, 0]);
+        mesh(g, new THREE.BoxGeometry(0.6, 0.15, 2.5), mat('#4a4a4a', { roughness: 0.6 }));
+        pointLight(g, '#fff5e0', 0.8, 8, [0, -0.3, 0]);
+        for (const z of [-0.8, 0, 0.8]) mesh(g, new THREE.CylinderGeometry(0.08, 0.12, 0.15, 8), brassGlow, [0, -0.1, z]);
+    }
+
+    // chandelier
+    const chandelier = group(scene, [0, 4.5, 0]);
+    mesh(chandelier, new THREE.CylinderGeometry(0.15, 0.3, 0.4, 8), mat('#c9a86c', { roughness: 0.3, metalness: 0.6 }));
+    mesh(chandelier, new THREE.SphereGeometry(0.25, 16, 16), mat('#fffae6', { roughness: 0.2, emissive: '#ffeaa7', emissiveIntensity: 0.5, transparent: true, opacity: 0.9 }), [0, -0.3, 0]);
+
+    // pillars
+    const marbleLight = mat('#d4c4a8', { roughness: 0.6 });
+    const marble = mat('#c9b896', { roughness: 0.5 });
+    for (const [x, z] of [[-4.5, -4.5], [4.5, -4.5], [-4.5, 4.5], [4.5, 4.5]]) {
+        const g = group(scene, [x, 0, z]);
+        mesh(g, new THREE.BoxGeometry(0.6, 0.4, 0.6), marbleLight, [0, 0.2, 0], undefined, 'cast');
+        mesh(g, new THREE.CylinderGeometry(0.2, 0.25, 4.6, 12), marble, [0, 2.7, 0], undefined, 'cast');
+        mesh(g, new THREE.BoxGeometry(0.55, 0.3, 0.55), marbleLight, [0, 4.8, 0], undefined, 'cast');
+    }
+
+    // collision. Walkable floor areas as [minX, maxX, minZ, maxZ], already shrunk by the player radius.
+    const walkable = [
+        [-4.6, 4.6, -4.6, 4.6],
+        [-DOOR_W / 2 + PLAYER_R, DOOR_W / 2 - PLAYER_R, 3.9, CORRIDOR_END - 1], // stop short of the exit door so it stays in view
+        [0, CLUB.x0 + 0.5, CLUB_DOOR_Z - DOOR_W / 2 + PLAYER_R, CLUB_DOOR_Z + DOOR_W / 2 - PLAYER_R],
+        [CLUB.x0 + PLAYER_R, CLUB.x1 - PLAYER_R, CLUB.z0 + PLAYER_R, CLUB.z1 - PLAYER_R],
+    ];
+    const inRects = (rects: number[][], x: number, z: number) => rects.some(([x0, x1, z0, z1]) => x >= x0 && x <= x1 && z >= z0 && z <= z1);
+    const onFloor = (x: number, z: number) => inRects(walkable, x, z);
+    // where flying debris can go: right up to the walls, through the doorway into the corridor
+    const debrisArea = [
+        [-4.9, 4.9, -4.9, 4.9],
+        [-DOOR_W / 2 + 0.05, DOOR_W / 2 - 0.05, 4.8, CORRIDOR_END - 0.1],
+        [0, CLUB.x0 + 0.2, CLUB_DOOR_Z - DOOR_W / 2 + 0.05, CLUB_DOOR_Z + DOOR_W / 2 - 0.05],
+        [CLUB.x0 + 0.1, CLUB.x1 - 0.1, CLUB.z0 + 0.1, CLUB.z1 - 0.1],
+    ];
+    const inDebrisArea = (x: number, z: number) => inRects(debrisArea, x, z);
+    // Furniture as boxes with a top height: blocks you unless you're above it, then you stand on it.
+    type Box = { x0: number; x1: number; z0: number; z1: number; top: number };
+    const boxes: Box[] = [];
+    const box = (x: number, z: number, halfW: number, halfD: number, top: number) => boxes.push({ x0: x - halfW, x1: x + halfW, z0: z - halfD, z1: z + halfD, top });
+    const over = (b: Box, x: number, z: number, margin: number) => x > b.x0 - margin && x < b.x1 + margin && z > b.z0 - margin && z < b.z1 + margin;
+    const groundAt = (x: number, z: number, margin: number) => boxes.reduce((h, b) => (over(b, x, z, margin) ? Math.max(h, b.top) : h), 0);
+    const free = (x: number, z: number, feet: number) => onFloor(x, z) && boxes.every((b) => !over(b, x, z, PLAYER_R) || b.top <= feet + STEP);
+    // debris bounces off walls and off furniture it hits below the top (above it, it lands on it)
+    const debrisFree = (x: number, z: number, bottom: number) => inDebrisArea(x, z) && boxes.every((b) => !over(b, x, z, 0) || bottom >= b.top);
+
+    for (const x of [-4.5, 4.5]) for (const z of [-4.5, 4.5]) box(x, z, 0.3, 0.3, 5); // pillars
+
+    // collision box given in the frame of an object at (cx, cz) turned by rotY, a multiple of a quarter turn
+    function turnedBox(cx: number, cz: number, rotY: number, lx: number, lz: number, halfW: number, halfD: number, top: number) {
+        const c = Math.round(Math.cos(rotY));
+        const s = Math.round(Math.sin(rotY));
+        box(cx + c * lx + s * lz, cz - s * lx + c * lz, c ? halfW : halfD, c ? halfD : halfW, top);
+    }
+
+    // black leather couch, front facing its local -z
+    const leather = mat('#141414', { roughness: 0.35, metalness: 0.15 });
+    const darkWood = mat('#3b2a1e', { roughness: 0.6 });
+    function couch(parent: THREE.Object3D, x: number, z: number, rotY: number) {
+        const g = group(parent, [x, 0, z], [0, rotY, 0]);
+        mesh(g, new THREE.BoxGeometry(2.2, 0.22, 0.9), leather, [0, 0.21, 0], undefined, 'cast');
+        mesh(g, new THREE.BoxGeometry(2.2, 0.6, 0.22), leather, [0, 0.6, 0.34], undefined, 'cast');
+        for (const sx of [-1, 1]) {
+            mesh(g, new THREE.BoxGeometry(0.2, 0.5, 0.9), leather, [sx, 0.45, 0], undefined, 'cast');
+            mesh(g, new THREE.BoxGeometry(0.88, 0.16, 0.68), leather, [sx * 0.45, 0.4, -0.08]);
+            mesh(g, new THREE.BoxGeometry(0.88, 0.42, 0.16), leather, [sx * 0.45, 0.68, 0.16], [-0.15, 0, 0]);
+            for (const sz of [-1, 1]) mesh(g, new THREE.CylinderGeometry(0.035, 0.03, 0.1, 6), darkWood, [sx, 0.05, sz * 0.38]);
+            turnedBox(x, z, rotY, sx, 0, 0.1, 0.45, 0.7); // armrests
+        }
+        mesh(g, new THREE.BoxGeometry(0.34, 0.34, 0.12), mat('#b8862b', { roughness: 0.9 }), [-0.68, 0.62, 0.02], [-0.2, 0.3, 0.1]);
+        turnedBox(x, z, rotY, 0, 0, 1.1, 0.45, 0.48); // seat
+        turnedBox(x, z, rotY, 0, 0.34, 1.1, 0.11, 0.9); // backrest
+    }
+    couch(scene, 0, 0.5, 0); // facing the back wall
+
+    // doorway frame; the entry door stands open against the wall, the exit door is closed
+    function door(pos: V3, rotY: number, open: boolean) {
+        const g = group(scene, pos, [0, rotY, 0]);
+        for (const sx of [-1, 1]) mesh(g, new THREE.BoxGeometry(0.12, DOOR_H, 0.16), darkWood, [sx * (DOOR_W / 2 + 0.06), DOOR_H / 2, -0.05]);
+        mesh(g, new THREE.BoxGeometry(DOOR_W + 0.24, 0.12, 0.16), darkWood, [0, DOOR_H + 0.06, -0.05]);
+        const leafMat = mat('#5a3d2b', { roughness: 0.55, emissive: '#ffd700', emissiveIntensity: 0 });
+        const hinge = group(g, [-DOOR_W / 2, 0, -0.06], [0, open ? PI * 0.95 : 0, 0]);
+        mesh(hinge, new THREE.BoxGeometry(DOOR_W - 0.04, DOOR_H - 0.04, 0.06), leafMat, [DOOR_W / 2, DOOR_H / 2, 0]);
+        for (const y of [0.75, 1.85]) mesh(hinge, new THREE.BoxGeometry(DOOR_W - 0.4, 0.8, 0.02), darkWood, [DOOR_W / 2, y, -0.035]);
+        mesh(hinge, new THREE.SphereGeometry(0.05, 8, 8), mat('#c9a86c', { roughness: 0.3, metalness: 0.7 }), [DOOR_W - 0.15, 1.05, -0.06]);
+        return { g, leafMat };
+    }
+    door([0, 0, 5], 0, true);
+
+    // corridor behind the front wall, exit door at its end
+    const corridorMid = (5 + CORRIDOR_END) / 2;
+    const CORRIDOR_H = 3;
+    mesh(scene, new THREE.PlaneGeometry(DOOR_W, CORRIDOR_LEN), mat('#4a1c1c', { roughness: 0.95 }), [0, 0, corridorMid], [-PI / 2, 0, 0], 'receive');
+    mesh(scene, new THREE.PlaneGeometry(DOOR_W, CORRIDOR_LEN), mat('#3d3d5c', { roughness: 0.9 }), [0, CORRIDOR_H, corridorMid], [PI / 2, 0, 0]);
+    const corridorWall = mat('#524560', { roughness: 0.85 });
+    mesh(scene, new THREE.PlaneGeometry(CORRIDOR_LEN, CORRIDOR_H), corridorWall, [-DOOR_W / 2, CORRIDOR_H / 2, corridorMid], [0, PI / 2, 0], 'receive');
+    doorWall(scene, CORRIDOR_LEN, CORRIDOR_H, CLUB_DOOR_Z - corridorMid, corridorWall, [DOOR_W / 2, 0, corridorMid], -PI / 2);
+    mesh(scene, new THREE.PlaneGeometry(DOOR_W, CORRIDOR_H), mat('#4a3f5c', { roughness: 0.85 }), [0, CORRIDOR_H / 2, CORRIDOR_END], [0, PI, 0]);
+    for (const f of [0.3, 0.75]) {
+        const z = 5 + CORRIDOR_LEN * f;
+        mesh(scene, new THREE.BoxGeometry(0.5, 0.05, 0.5), mat('#fffae6', { emissive: '#ffeaa7', emissiveIntensity: 0.8 }), [0, CORRIDOR_H - 0.03, z]);
+        pointLight(scene, '#ffe8c0', 1.2, 8, [0, CORRIDOR_H - 0.3, z]);
+    }
+    const exit = door([0, 0, CORRIDOR_END], 0, false);
+    const exitDoor = { exit: true, leafMat: exit.leafMat };
+    exit.g.userData.target = exitDoor;
+    mesh(exit.g, new THREE.BoxGeometry(0.9, 0.25, 0.05), new THREE.MeshBasicMaterial({ color: '#0b3d1a' }), [0, DOOR_H + 0.3, -0.05]);
+    mesh(exit.g, new THREE.PlaneGeometry(0.9, 0.17), new THREE.MeshBasicMaterial({ map: labelTexture('AUSGANG', '#4ade80'), transparent: true }), [0, DOOR_H + 0.3, -0.08], [0, PI, 0]);
+
+    // living room. Everything under `club` gets its bounce light, see captureBounce().
+    const club = group(scene);
+    const clubX = (CLUB.x0 + CLUB.x1) / 2;
+    const clubZ = (CLUB.z0 + CLUB.z1) / 2;
+    const clubW = CLUB.x1 - CLUB.x0;
+    const clubD = CLUB.z1 - CLUB.z0;
+    // industrial: brick walls, polished concrete floor, raw concrete ceiling on steel beams
+    const clubWall = mat('#ffffff', { map: brickTexture(), roughness: 0.9 });
+    const concrete = concreteTexture();
+    mesh(club, meterPlane(clubW, clubD), mat('#ffffff', { map: concrete, roughness: 0.25 }), [clubX, 0, clubZ], [-PI / 2, 0, 0], 'receive');
+    mesh(club, meterPlane(clubW, clubD), mat('#6a6a6a', { map: concrete, roughness: 0.9 }), [clubX, CLUB.h, clubZ], [PI / 2, 0, 0]);
+    mesh(club, meterPlane(clubD, CLUB.h), clubWall, [CLUB.x1, CLUB.h / 2, clubZ], [0, -PI / 2, 0], 'receive');
+    mesh(club, meterPlane(clubW, CLUB.h), clubWall, [clubX, CLUB.h / 2, CLUB.z0], [0, 0, 0], 'receive');
+    mesh(club, meterPlane(clubW, CLUB.h), clubWall, [clubX, CLUB.h / 2, CLUB.z1], [0, PI, 0], 'receive');
+    const steel = mat('#2b2d30', { roughness: 0.5, metalness: 0.6 });
+    for (let x = CLUB.x0 + 1.5; x < CLUB.x1; x += 2.5) mesh(club, new THREE.BoxGeometry(0.18, 0.28, clubD), steel, [x, CLUB.h - 0.14, clubZ]);
+    doorWall(club, clubD, CLUB.h, clubZ - CLUB_DOOR_Z, clubWall, [CLUB.x0, 0, clubZ], PI / 2);
+    door([CLUB.x0, 0, CLUB_DOOR_Z], -PI / 2, true);
+    // sofa facing the PA, on a rug
+    couch(club, 3.3, CLUB_DOOR_Z, -PI / 2);
+    mesh(club, new THREE.BoxGeometry(2.4, 0.01, 3.2), mat('#5a3b2e', { roughness: 1 }), [4.95, 0.005, CLUB_DOOR_Z], undefined, 'receive');
+
+    // DJ booth in front of the back wall, the DJ faces the door. Booth-local +z points to the DJ, -z to the room.
+    const [boothX, boothZ] = [CLUB.x1 - 2, clubZ];
+    const booth = group(club, [boothX, 0, boothZ], [0, PI / 2, 0]);
+    const put = <T extends THREE.Object3D>(obj: T, pos: V3, rotY = 0) => {
+        obj.position.set(...pos);
+        obj.rotation.y = rotY;
+        booth.add(obj);
+        return obj;
+    };
+    // collision box in booth-local coordinates (the booth is turned a quarter, so x and z swap)
+    const boothBox = (lx: number, lz: number, halfW: number, halfD: number, top: number) => turnedBox(boothX, boothZ, PI / 2, lx, lz, halfW, halfD, top);
+    put(usmHaller(2, 0.8, TABLE_H), [0, 0, 0]);
+    const xone = xone92();
+    put(xone.g, [0, TABLE_H, 0.05]);
+    const platters = [-0.42, 0.42].map((x) => {
+        const tt = technics1200();
+        put(tt.g, [x, TABLE_H, 0.02]);
+        return tt.platter;
+    });
+    put(amp(), [-1.4, 0, 0], PI);
+    // subs stacked by hand, so slightly off
+    put(f118(), [-2.3, 0, -0.8], PI - 0.02);
+    put(f118(), [-2.27, 0.672, -0.83], PI + 0.05);
+    put(br218(), [-3.1, 0, -0.75], PI - 0.08);
+    boothBox(0, 0, 1, 0.4, TABLE_H + 0.17);
+    boothBox(-1.4, 0, 0.23, 0.25, 0.2);
+    boothBox(-2.3, -0.8, 0.38, 0.27, 1.344);
+    boothBox(-3.1, -0.75, 0.31, 0.32, 1.02);
+    // mixer -> amp -> both subs
+    const cableMat = mat('#0d0d0d', { roughness: 0.7 });
+    const cable = (r: number, pts: V3[]) => mesh(booth, new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p))), 64, r, 6), cableMat);
+    cable(0.005, [[0.03, TABLE_H + 0.05, -0.16], [-0.3, TABLE_H + 0.02, -0.39], [-0.75, 0.02, -0.3], [-1.2, 0.01, 0.35], [-1.35, 0.1, 0.26]]);
+    cable(0.009, [[-1.5, 0.1, 0.26], [-1.7, 0.01, 0.35], [-2.2, 0.01, -0.3], [-2.3, 0.3, -0.56]]);
+    cable(0.009, [[-1.45, 0.12, 0.26], [-1.8, 0.02, 0.3], [-2.4, 0.4, -0.45], [-2.4, 1.0, -0.56]]);
+    cable(0.009, [[-1.55, 0.08, 0.26], [-1.8, 0.01, 0.4], [-2.8, 0.01, 0.1], [-3.1, 0.3, -0.46]]);
+    const mixer = { soundcloud: true, panel: xone.panel };
+    xone.g.userData.target = mixer;
+
+    // Evo 2 tops hung in the back corners left and right of the booth, angled down at the dancefloor
+    const rigging = mat('#3a3a3a', { roughness: 0.5, metalness: 0.6 });
+    for (const z of [CLUB.z0 + 0.6, CLUB.z1 - 0.6]) {
+        const x = CLUB.x1 - 0.6;
+        const g = group(club, [x, 0, z], [0, Math.atan2(clubX - 1 - x, clubZ - z), 0]);
+        const top = evo2();
+        top.position.y = CLUB.h - 0.35 - 0.78;
+        top.rotation.x = 0.15;
+        g.add(top);
+        for (const sx of [-0.2, 0.2]) mesh(g, new THREE.CylinderGeometry(0.01, 0.01, 0.4, 6), rigging, [sx, CLUB.h - 0.2, 0]);
+    }
+
+    // central hanging lamp
+    const hanging = group(scene, [0, 4.2, 0]);
+    mesh(hanging, new THREE.CylinderGeometry(0.02, 0.02, 0.8, 6), mat('#8b7355', { metalness: 0.6, roughness: 0.4 }), [0, 0.4, 0]);
+    mesh(hanging, new THREE.TorusGeometry(0.4, 0.03, 8, 24), mat('#c9a86c', { metalness: 0.7, roughness: 0.3 }));
+    mesh(hanging, new THREE.SphereGeometry(0.35, 16, 16, 0, PI * 2, 0, PI / 2), mat('#fffae6', { transparent: true, opacity: 0.6, emissive: '#ffeaa7', emissiveIntensity: 0.4, side: THREE.DoubleSide }), [0, -0.15, 0]);
+    pointLight(hanging, '#fff8e7', 2, 10, [0, -0.1, 0], true);
+
+    // paintings
+    // tracks every texture load so the loading screen knows when the scene is complete
+    const manager = new THREE.LoadingManager();
+    const loaded = new Promise<void>((resolve) => (manager.onLoad = resolve));
+    manager.onProgress = (_url, done, total) => loadingStatus(`Lade Kunstwerke ${done}/${total}`, 10 + (60 * done) / total);
+    const loader = new THREE.TextureLoader(manager);
+    // unit-size geometry, scaled to the image's aspect ratio once it has loaded
+    const frameGeo = new THREE.BoxGeometry(1, 1, 0.1);
+    const canvasGeo = new THREE.PlaneGeometry(1, 1);
+    const plaqueMat = mat('#1a1a2e', { roughness: 0.4, metalness: 0.5 });
+    const paintings = artworks.map((artwork) => {
+        const g = group(scene, artwork.position, artwork.rotation);
+        const frame = mat('#3d3d3d', { roughness: 0.3, metalness: 0.6, emissive: '#ffd700', emissiveIntensity: 0 });
+        const frameMesh = mesh(g, frameGeo, frame, undefined, undefined, 'cast');
+        const art = mesh(g, canvasGeo, mat('#ffffff', { roughness: 0.7, metalness: 0 }), [0, 0, 0.06]);
+        const spot = new THREE.SpotLight('#fff8e7', 0.8, 0, 0.5, 0.5);
+        spot.position.set(0, 1.5, 1);
+        g.add(spot, spot.target); // target at the painting's center
+        const plaque = mesh(g, new THREE.BoxGeometry(0.8, 0.15, 0.02), plaqueMat, [0, 0, 0.05]);
+        const label = mesh(g, new THREE.PlaneGeometry(0.8, 0.15), new THREE.MeshBasicMaterial({ map: labelTexture(artwork.title), transparent: true }), [0, 0, 0.07]);
+        const fit = (w: number, h: number) => {
+            const k = PAINTING_MAX / Math.max(w, h);
+            art.scale.set(w * k, h * k, 1);
+            frameMesh.scale.set(w * k + 0.3, h * k + 0.3, 1);
+            plaque.position.y = label.position.y = -(h * k + 0.3) / 2 - 0.25;
+        };
+        fit(1.5, 1.1); // placeholder until the image arrives
+        loader.load(artwork.image, (tex) => {
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.minFilter = tex.magFilter = THREE.NearestFilter; // pixelated retro look
+            (art.material as THREE.MeshStandardMaterial).map = tex;
+            (art.material as THREE.MeshStandardMaterial).needsUpdate = true;
+            fit(tex.image.width, tex.image.height);
+        });
+        const painting = { artwork, frame, spot };
+        g.userData.target = painting;
+        return painting;
+    });
+
+    // floor lamps
+    const glowMat = new THREE.MeshBasicMaterial({ color: '#ffd700', side: THREE.BackSide, transparent: true, depthWrite: false, fog: false });
+    const lamps = lampDefs.map(([p, power, range]) => {
+        const g = group(scene, p);
+        mesh(g, new THREE.CylinderGeometry(0.2, 0.25, 0.2, 8), mat('#2a2a2a', { roughness: 0.6, metalness: 0.4 }), [0, 0.1, 0]);
+        mesh(g, new THREE.CylinderGeometry(0.04, 0.04, 1.6, 8), mat('#c9a86c', { roughness: 0.3, metalness: 0.6 }), [0, 0.9, 0]);
+        const shade = mat('#f5e6d3', { roughness: 0.9, side: THREE.DoubleSide, emissive: '#ffeaa7', emissiveIntensity: 0.3 });
+        mesh(g, new THREE.ConeGeometry(0.3, 0.4, 8, 1, true), shade, [0, 1.8, 0]);
+        const bulb = mat('#fff8e7', { emissive: '#ffeaa7', emissiveIntensity: 1.2, roughness: 0.3 });
+        mesh(g, new THREE.SphereGeometry(0.1, 8, 8), bulb, [0, 1.65, 0]);
+        // intensity 0 instead of removing the light, avoids a shader recompile on toggle
+        const light = pointLight(g, '#fff5e0', power, range, [0, 1.7, 0]);
+        // glow outline: slightly larger back-face shell, shown while aimed at
+        const glow = group(g);
+        glow.visible = false;
+        mesh(glow, new THREE.CylinderGeometry(0.24, 0.29, 0.26, 8), glowMat, [0, 0.1, 0]);
+        mesh(glow, new THREE.CylinderGeometry(0.07, 0.07, 1.62, 8), glowMat, [0, 0.9, 0]);
+        mesh(glow, new THREE.ConeGeometry(0.35, 0.48, 8), glowMat, [0, 1.8, 0]);
+        box(p[0], p[2], 0.25, 0.25, 2.1);
+        const lamp = { on: true, power, shade, bulb, light, glow };
+        g.userData.target = lamp;
+        return lamp;
+    });
+
+    function toggleLamp(lamp: (typeof lamps)[number]) {
+        const on = (lamp.on = !lamp.on);
+        lamp.shade.color.set(on ? '#f5e6d3' : '#8a7a6a');
+        lamp.shade.emissiveIntensity = on ? 0.3 : 0;
+        lamp.bulb.color.set(on ? '#fff8e7' : '#3a3a3a');
+        lamp.bulb.emissiveIntensity = on ? 1.2 : 0;
+        lamp.light.intensity = on ? lamp.power : 0;
+    }
+
+    // held item and blocky hand, attached to the camera
+    const item = group(camera);
+    const holder = group(item);
+    const models = new Map<ItemId, THREE.Group>();
+    const inventory: ItemId[] = [...STARTER_ITEMS];
+    let equipped: ItemId = inventory[0];
+    function showItem(id: ItemId) {
+        holder.clear();
+        if (!models.has(id)) models.set(id, ITEMS[id].build());
+        const model = models.get(id)!;
+        setFill(model, 1);
+        holder.add(model);
+        equipped = id;
+    }
+    showItem(equipped);
+    const hand = group(item, [0, -0.08, 0.02]);
+    hand.scale.setScalar(0.12);
+    const skin = mat('#d4a574', { roughness: 0.8 });
+    const finger = mat('#c99a64', { roughness: 0.8 });
+    mesh(hand, new THREE.BoxGeometry(0.35, 1.2, 0.35), mat('#2a2a4a', { roughness: 0.9 }), [0.8, -1.2, 0.3], [0.2, 0, -0.6]);
+    mesh(hand, new THREE.BoxGeometry(0.32, 0.9, 0.32), mat('#3d3d5c', { roughness: 0.9 }), [0.3, -0.4, 0.15], [0.3, 0, -0.3]);
+    mesh(hand, new THREE.BoxGeometry(0.28, 0.25, 0.28), skin, [0.1, -0.05, 0.08], [0.1, 0, -0.1]);
+    mesh(hand, new THREE.BoxGeometry(0.6, 0.3, 0.4), skin);
+    mesh(hand, new THREE.BoxGeometry(0.15, 0.25, 0.2), skin, [0.35, 0.05, 0]);
+    mesh(hand, new THREE.BoxGeometry(0.5, 0.15, 0.35), finger, [0, 0.2, 0]);
+    mesh(hand, new THREE.BoxGeometry(0.12, 0.12, 0.3), finger, [-0.15, 0.32, 0]);
+    mesh(hand, new THREE.BoxGeometry(0.12, 0.12, 0.3), finger, [0.15, 0.32, 0]);
+
+    // Fake global illumination for the living room: render it into a cube map from its center and light its
+    // materials with that, one more bounce per capture. Static, so recaptured whenever a lamp changes.
+    const cubeRT = new THREE.WebGLCubeRenderTarget(128, { type: THREE.HalfFloatType });
+    const cubeCam = new THREE.CubeCamera(0.1, 30, cubeRT);
+    cubeCam.position.set(clubX, 1.6, clubZ);
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const clubMats = new Set<THREE.MeshStandardMaterial>();
+    club.traverse((o) => {
+        if (o instanceof THREE.Mesh) for (const m of [o.material].flat()) if (m instanceof THREE.MeshStandardMaterial) clubMats.add(m);
+    });
+    let bounce: THREE.WebGLRenderTarget | undefined;
+    function captureBounce() {
+        item.visible = false; // the hand isn't part of the room
+        cubeCam.update(renderer, scene);
+        item.visible = true;
+        const old = bounce;
+        bounce = pmrem.fromCubemap(cubeRT.texture);
+        for (const m of clubMats) {
+            m.envMap = bounce.texture;
+            m.envMapIntensity = BOUNCE;
+            if (!old) m.needsUpdate = true;
+        }
+        old?.dispose();
+    }
+
+    // --- controls & UI ----------------------------------------------------
+
+    const canvas = renderer.domElement;
+    const modal = $('modal');
+    const hint = $('hint');
+    const crosshair = $('crosshair');
+    const inventoryEl = $('inventory');
+    const overlayOpen = () => !modal.hidden || !inventoryEl.hidden;
+    let paused = false;
+    const keys = new Set<string>();
+    const held = (...codes: string[]) => codes.some((c) => keys.has(c));
+    type Lamp = (typeof lamps)[number];
+    type Painting = (typeof paintings)[number];
+    let aimed: Lamp | Painting | typeof exitDoor | typeof mixer | undefined;
+    const raycaster = new THREE.Raycaster(undefined, undefined, 0, REACH);
+    const screenCenter = new THREE.Vector2();
+    // walls and pillars block the ray, the held glass doesn't
+    const solids = scene.children.filter((o) => o !== camera);
+
+    function openModal(a: Artwork) {
+        ($('modal-img') as HTMLImageElement).src = a.image;
+        ($('modal-img') as HTMLImageElement).alt = a.title;
+        $('modal-title').textContent = a.title;
+        $('modal-meta').textContent = `${a.artist}, ${a.year}`;
+        $('modal-desc').textContent = a.description;
+        $('modal-desc').hidden = !a.description;
+        modal.hidden = false;
+    }
+    const closeModal = () => (modal.hidden = true);
+
+    // drag to look around, FPS-style (drag right = look right), 1:1 with the field of view.
+    // A mouse drag holds a pointer lock so the cursor stays put and reappears where it was;
+    // touch (no pointer lock) follows the finger instead.
+    const radPerPx = () => THREE.MathUtils.degToRad(camera.fov) / canvas.clientHeight;
+    const look = new THREE.Euler(0, 0, 0, 'YXZ');
+    let drag: { x: number; y: number } | null = null;
+    canvas.addEventListener('pointerdown', (e) => {
+        drag = { x: e.clientX, y: e.clientY };
+        if (e.pointerType === 'mouse') canvas.requestPointerLock()?.catch(() => {}); // refused lock falls back to client deltas
+        else canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener('pointermove', (e) => {
+        if (!drag) return;
+        const locked = document.pointerLockElement === canvas;
+        const dx = locked ? e.movementX : e.clientX - drag.x;
+        const dy = locked ? e.movementY : e.clientY - drag.y;
+        look.setFromQuaternion(camera.quaternion);
+        look.y -= dx * radPerPx();
+        look.x = THREE.MathUtils.clamp(look.x - dy * radPerPx(), -PI / 2 + 0.01, PI / 2 - 0.01);
+        camera.quaternion.setFromEuler(look);
+        drag = { x: e.clientX, y: e.clientY };
+    });
+    for (const type of ['pointerup', 'pointercancel']) {
+        canvas.addEventListener(type, () => {
+            drag = null;
+            if (document.pointerLockElement === canvas) document.exitPointerLock();
+        });
+    }
+
+    // --- item animations: keyframed poses of the hand+item, relative to the camera
+    type Pose = { pos: V3; rot: V3 };
+    const REST: Pose = { pos: [0.35, -0.35, -0.5], rot: [0.05, 0, 0.1] };
+    // deliberately goofy: overshooting tilts, wobbling, a big overhead fling, a twirl out of the pocket
+    const MOUTH: Pose = { pos: [0.08, -0.22, -0.34], rot: [0.9, 0, 0.4] };
+    const CHUG: Pose = { pos: [0.08, -0.16, -0.34], rot: [2.1, 0, -0.2] }; // way past upside down
+    const SHOW: Pose = { pos: [0, -0.2, -0.45], rot: [0.15, 0, 0] }; // held up in front: look, empty!
+    const WINDUP: Pose = { pos: [0.15, -0.28, -0.55], rot: [0.9, 0, 0.3] }; // dip forward before the fling
+    const FLING: Pose = { pos: [0.35, 0.3, 0.05], rot: [-2.3, 0, -0.6] }; // up and over the shoulder
+    const POCKET: Pose = { pos: [0.4, -1.0, -0.4], rot: [0.3, 0, 0.4] };
+    const TWIRLED: Pose = { pos: REST.pos, rot: [REST.rot[0], PI * 2, REST.rot[2]] }; // REST after a full spin
+    type Anim = {
+        keys: [number, Pose][];
+        drain: [number, number, number, number][]; // [from t, to t, from level, to level]
+        release: number | null;
+        swap: number;
+    };
+    const ANIMS: Record<'drink' | 'swap', Anim> = {
+        // one long chug, show off the empty glass, fling it over the shoulder, twirl a fresh one out of the pocket
+        drink: {
+            keys: [[0, REST], [0.3, MOUTH], [1.3, CHUG], [1.55, SHOW], [2.0, SHOW], [2.2, WINDUP], [2.33, FLING], [2.6, POCKET], [3.1, TWIRLED]],
+            drain: [[0.3, 1.3, 1, 0]],
+            release: 2.3,
+            swap: 2.6,
+        },
+        // switch to another item from the inventory
+        swap: { keys: [[0, REST], [0.35, POCKET], [0.85, TWIRLED]], drain: [], release: null, swap: 0.35 },
+    };
+    const fillAt = (drain: Anim['drain'], t: number) =>
+        drain.reduce((level, [t0, t1, from, to]) => (t <= t0 ? level : from + (to - from) * Math.min(1, (t - t0) / (t1 - t0))), 1);
+    let anim: { kind: keyof typeof ANIMS; t: number; next: ItemId; released: boolean; swapped: boolean } | null = null;
+    const smooth = (x: number) => x * x * (3 - 2 * x);
+    function animPose(keyframes: [number, Pose][], t: number): Pose {
+        let i = 1;
+        while (i < keyframes.length - 1 && t > keyframes[i][0]) i++;
+        const [t0, a] = keyframes[i - 1];
+        const [t1, b] = keyframes[i];
+        const k = smooth(THREE.MathUtils.clamp((t - t0) / (t1 - t0), 0, 1));
+        const mix = (u: V3, v: V3) => u.map((n, j) => n + (v[j] - n) * k) as V3;
+        return { pos: mix(a.pos, b.pos), rot: mix(a.rot, b.rot) };
+    }
+
+    // debris: tossed items and glass shards fly with gravity and stay where they land
+    type Debris = { obj: THREE.Object3D; v: THREE.Vector3; spin: THREE.Vector3; restY: number; resting: boolean; item?: ItemId; bounces?: number };
+    const tossed: Debris[] = [];
+    const shards: Debris[] = [];
+    const rand = (min: number, max: number) => min + Math.random() * (max - min);
+    const randomSpin = (k: number) => new THREE.Vector3(rand(-k, k), rand(-k, k), rand(-k, k));
+    function removeItem(d: Debris) {
+        tossed.splice(tossed.indexOf(d), 1);
+        scene.remove(d.obj);
+        d.obj.traverse((o) => {
+            if (o instanceof THREE.Mesh) {
+                o.geometry.dispose();
+                (o.material as THREE.Material).dispose();
+            }
+        });
+    }
+    // ponytail: oldest items/shards vanish past these caps, raise them if a messier floor is wanted
+    function launch(d: Debris) {
+        scene.add(d.obj);
+        const list = d.item ? tossed : shards;
+        list.push(d);
+        if (d.item && tossed.length > 12) removeItem(tossed[0]);
+        if (!d.item && shards.length > 300) scene.remove(shards.shift()!.obj); // shards share geometry, nothing to dispose
+    }
+
+    function toss() {
+        const obj = ITEMS[equipped].build();
+        setFill(obj, 0);
+        holder.children[0].getWorldPosition(obj.position);
+        holder.children[0].getWorldQuaternion(obj.quaternion);
+        // backwards over the right shoulder
+        const v = forward.clone().multiplyScalar(-rand(4, 5.5)).addScaledVector(right, rand(0.3, 0.9)).setY(rand(3.5, 4.5));
+        launch({ obj, v, spin: randomSpin(14), restY: ITEMS[equipped].lyingY, resting: false, item: equipped });
+    }
+
+    const shardGeo = new THREE.TetrahedronGeometry(0.045);
+    const shardMats = new Map<string, THREE.Material>();
+    function shatter(d: Debris) {
+        removeItem(d);
+        const color = ITEMS[d.item!].shard;
+        if (!shardMats.has(color)) shardMats.set(color, mat(color, { transparent: true, opacity: 0.85, roughness: 0.05, metalness: 0.3, emissive: color, emissiveIntensity: 0.35 }));
+        for (let i = 0; i < 30; i++) {
+            const m = new THREE.Mesh(shardGeo, shardMats.get(color)!);
+            m.scale.set(rand(0.5, 1.6), 0.3, rand(0.5, 1.6)); // flat splinters
+            m.position.copy(d.obj.position);
+            // cartoonishly violent burst
+            const v = d.v.clone().multiplyScalar(0.3).add(new THREE.Vector3(rand(-5, 5), rand(2, 6), rand(-5, 5)));
+            launch({ obj: m, v, spin: randomSpin(30), restY: 0.005, resting: false });
+        }
+    }
+
+    // walking into a lying item kicks it, with a random amount of oomph
+    function kick(speed: number) {
+        if (speed < 0.5) return;
+        for (const d of [...tossed]) {
+            if (!d.resting || Math.abs(d.obj.position.y - feet) > 0.5) continue;
+            const dx = d.obj.position.x - camera.position.x;
+            const dz = d.obj.position.z - camera.position.z;
+            const dist = Math.hypot(dx, dz) || 1;
+            if (dist > PLAYER_R + 0.15) continue;
+            // cartoon physics: way more oomph than a real foot would give
+            const force = speed * rand(1.5, 3.5);
+            d.v.set((dx / dist) * force, force * rand(0.4, 0.8), (dz / dist) * force);
+            if (force > BREAK_FORCE) {
+                shatter(d);
+                continue;
+            }
+            d.spin = randomSpin(force * 3);
+            d.resting = false;
+        }
+    }
+
+    // --- inventory menu (Tab)
+    function renderInventory() {
+        const list = $('inventory-list');
+        list.replaceChildren(
+            ...inventory.map((id, i) => {
+                const li = document.createElement('li');
+                const btn = document.createElement('button');
+                btn.className = 'flex w-full items-center gap-3 rounded border px-3 py-2 text-left hover:border-(--primary) ' + (id === equipped ? 'border-(--primary) bg-(--primary)/15' : 'border-(--border)');
+                btn.textContent = `[${i + 1}] ${ITEMS[id].icon} ${ITEMS[id].name}${id === equipped ? '  ·  in der Hand' : ''}`;
+                btn.addEventListener('click', () => equip(id));
+                li.append(btn);
+                return li;
+            }),
+        );
+    }
+    function toggleInventory(open = inventoryEl.hidden) {
+        if (open) renderInventory();
+        inventoryEl.hidden = !open;
+    }
+    function equip(id: ItemId) {
+        toggleInventory(false);
+        if (anim || id === equipped) return;
+        anim = { kind: 'swap', t: 0, next: id, released: false, swapped: false };
+    }
+
+    // --- pause back to the start screen (Escape)
+    function pause() {
+        paused = true;
+        keys.clear();
+        renderer.setAnimationLoop(null);
+        $('start-btn').textContent = 'WEITER';
+        $('start').hidden = false;
+    }
+    function resume() {
+        paused = false;
+        last = performance.now();
+        renderer.setAnimationLoop(loop);
+    }
+
+    for (const el of document.querySelectorAll('[data-close]')) el.addEventListener('click', closeModal);
+    addEventListener('keydown', (e) => {
+        if (paused) return;
+        if (['Space', 'Tab'].includes(e.code)) e.preventDefault(); // no page scroll / focus jump
+        keys.add(e.code);
+        if (e.repeat) return;
+        if (e.code === 'Escape') {
+            if (!modal.hidden) closeModal();
+            else if (!inventoryEl.hidden) toggleInventory(false);
+            else pause();
+        } else if (e.code === 'Tab' && modal.hidden) {
+            toggleInventory();
+        } else if (!inventoryEl.hidden && /^Digit[1-9]$/.test(e.code)) {
+            const id = inventory[Number(e.code.slice(5)) - 1];
+            if (id) equip(id);
+        } else if (overlayOpen()) {
+            return;
+        } else if (e.code === 'Space' && onGround) {
+            vy = JUMP_V;
+            onGround = false;
+        } else if (e.code === 'KeyE') {
+            if (!aimed) {
+                if (!anim) anim = { kind: 'drink', t: 0, next: equipped, released: false, swapped: false };
+            } else if ('glow' in aimed) {
+                toggleLamp(aimed);
+                captureBounce();
+            }
+            else if ('artwork' in aimed) openModal(aimed.artwork);
+            else if (aimed === mixer) open(SOUNDCLOUD, '_blank', 'noopener');
+            else location.href = '/';
+        }
+    });
+    addEventListener('keyup', (e) => keys.delete(e.code));
+    addEventListener('blur', () => keys.clear());
+    addEventListener('resize', () => {
+        camera.aspect = innerWidth / innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+    });
+
+    const forward = new THREE.Vector3();
+    const right = new THREE.Vector3();
+    const step = new THREE.Vector3();
+    let last = 0;
+    let time = 0;
+    let feet = 0; // height of the player's feet
+    let vy = 0;
+    let onGround = true;
+    let landDip = 0; // camera dip after landing
+    let stride = 0; // walk cycle phase for head and item bob
+    let sprintBlend = 0; // 0 walking .. 1 sprinting, eased
+    const loading = $('loading');
+    await loaded;
+    loadingStatus('Bereite Shader vor', 75);
+    await nextFrame();
+    // twice: the second capture renders the room with its bounce map, compiling the cube-map shader
+    // variants a lamp toggle needs. Otherwise the first toggle stalls for over a second.
+    captureBounce();
+    captureBounce();
+    await renderer.compileAsync(scene, camera); // compile shaders up front, no stutter on the first frames
+    loadingStatus('Rendere Szene', 95);
+    function loop(t: number) {
+        const dt = Math.min((t - last) / 1000, 0.1);
+        last = t;
+        time += dt;
+
+        let walking = false;
+        let sprinting = false;
+        camera.getWorldDirection(forward).setY(0).normalize();
+        right.crossVectors(forward, camera.up);
+        if (!overlayOpen()) {
+            const f = Number(held('KeyW', 'ArrowUp')) - Number(held('KeyS', 'ArrowDown'));
+            const r = Number(held('KeyD', 'ArrowRight')) - Number(held('KeyA', 'ArrowLeft'));
+            walking = f !== 0 || r !== 0;
+            sprinting = walking && held('ShiftLeft', 'ShiftRight');
+            const speed = MOVE_SPEED * (sprinting ? SPRINT : 1) * dt;
+            step.set(0, 0, 0).addScaledVector(forward, f * speed).addScaledVector(right, r * speed);
+            // per axis, so you slide along walls and furniture instead of sticking
+            const { x, z } = camera.position;
+            if (free(x + step.x, z, feet)) camera.position.x += step.x;
+            if (free(camera.position.x, z + step.z, feet)) camera.position.z += step.z;
+            kick(Math.hypot(camera.position.x - x, camera.position.z - z) / dt);
+        }
+
+        // gravity, jumping and standing on furniture
+        vy -= GRAVITY * dt;
+        feet += vy * dt;
+        const ground = groundAt(camera.position.x, camera.position.z, PLAYER_R / 2);
+        if (feet <= ground) {
+            if (!onGround && vy < -3) landDip = Math.min(0.12, -vy * 0.015);
+            feet = ground;
+            vy = 0;
+            onGround = true;
+        } else onGround = false;
+
+        // sprint feel: faster stride, wider FOV, item lowered
+        sprintBlend += ((sprinting ? 1 : 0) - sprintBlend) * Math.min(1, dt * 8);
+        const fov = 60 + sprintBlend * 8;
+        if (Math.abs(camera.fov - fov) > 0.01) {
+            camera.fov = fov;
+            camera.updateProjectionMatrix();
+        }
+        if (walking && onGround) stride += dt * (9 + sprintBlend * 5);
+        const bobAmp = walking && onGround ? 0.025 + sprintBlend * 0.025 : 0;
+        landDip *= Math.exp(-dt * 10);
+        camera.position.y = feet + EYE + Math.sin(stride * 2) * bobAmp - landDip;
+
+        // tossed items and shards in flight
+        for (const d of [...tossed, ...shards]) {
+            if (d.resting) continue;
+            d.v.y -= GRAVITY * dt;
+            // bounce off walls (per axis) and the ceiling
+            const p = d.obj.position;
+            const bottom = p.y - d.restY;
+            let hit = false;
+            if (debrisFree(p.x + d.v.x * dt, p.z, bottom)) p.x += d.v.x * dt;
+            else {
+                d.v.x *= -0.7;
+                hit = true;
+            }
+            if (debrisFree(p.x, p.z + d.v.z * dt, bottom)) p.z += d.v.z * dt;
+            else {
+                d.v.z *= -0.7;
+                hit = true;
+            }
+            p.y += d.v.y * dt;
+            const ceiling = p.x > CLUB.x0 ? CLUB.h : p.z > 5 ? 3 : 5; // corridor is lower than the rooms
+            if (p.y > ceiling - 0.1) {
+                p.y = ceiling - 0.1;
+                d.v.y = -Math.abs(d.v.y) * 0.5;
+                hit = true;
+            }
+            d.obj.rotation.x += d.spin.x * dt;
+            d.obj.rotation.y += d.spin.y * dt;
+            d.obj.rotation.z += d.spin.z * dt;
+            const floorY = groundAt(d.obj.position.x, d.obj.position.z, 0) + d.restY;
+            if (d.obj.position.y <= floorY) {
+                d.obj.position.y = floorY;
+                if (d.v.y < -2.5) {
+                    // hop along the floor until it runs out of energy
+                    d.v.set(d.v.x * 0.7, -d.v.y * 0.45, d.v.z * 0.7);
+                    hit = true;
+                } else {
+                    d.obj.rotation.set(0, rand(0, PI * 2), 0); // shards lie flat
+                    if (d.item) d.obj.rotateX(PI / 2); // items on their side
+                    d.resting = true;
+                }
+            }
+            // every bounce makes the next one likelier to break it
+            if (hit && d.item) {
+                d.bounces = (d.bounces ?? 0) + 1;
+                if (Math.random() < 0.1 * d.bounces) shatter(d);
+            }
+        }
+
+        // whatever the crosshair points at first, if it's interactive
+        raycaster.setFromCamera(screenCenter, camera);
+        let o: THREE.Object3D | null = raycaster.intersectObjects(solids)[0]?.object ?? null;
+        while (o && !o.userData.target) o = o.parent;
+        aimed = overlayOpen() ? undefined : o?.userData.target;
+
+        for (const p of paintings) {
+            const on = p === aimed;
+            p.frame.emissiveIntensity += ((on ? 0.3 : 0) - p.frame.emissiveIntensity) * 0.1;
+            p.spot.intensity = on ? 1.5 : 0.8;
+        }
+        for (const l of lamps) l.glow.visible = l === aimed;
+        exitDoor.leafMat.emissiveIntensity += ((aimed === exitDoor ? 0.25 : 0) - exitDoor.leafMat.emissiveIntensity) * 0.1;
+        mixer.panel.emissiveIntensity += ((aimed === mixer ? 0.25 : 0) - mixer.panel.emissiveIntensity) * 0.1;
+        for (const p of platters) p.rotation.y -= dt * 3.49; // 33⅓ rpm
+        glowMat.opacity = 0.35 + Math.sin(time * 4) * 0.15;
+
+        const text = !aimed ? '' : 'glow' in aimed ? `Lampe ${aimed.on ? 'ausschalten' : 'einschalten'}` : 'artwork' in aimed ? 'Ansehen' : aimed === mixer ? 'SoundCloud öffnen' : 'Galerie verlassen';
+        if (hint.dataset.text !== text) {
+            hint.dataset.text = $('hint-text').textContent = text;
+            hint.hidden = !text;
+            crosshair.classList.toggle('aimed', !!text);
+        }
+
+        // held item: keyframed animation, else rest pose with walk bob / idle sway
+        if (anim) {
+            const a = ANIMS[anim.kind];
+            anim.t += dt;
+            const pose = animPose(a.keys, anim.t);
+            item.position.set(...pose.pos);
+            item.rotation.set(...pose.rot);
+            if (a.drain.length && !anim.released) setFill(holder.children[0], fillAt(a.drain, anim.t));
+            if (a.release !== null && !anim.released && anim.t >= a.release) {
+                anim.released = true;
+                toss();
+                holder.visible = false;
+            }
+            if (!anim.swapped && anim.t >= a.swap) {
+                anim.swapped = true;
+                showItem(anim.next);
+                holder.visible = true;
+            }
+            if (anim.t >= a.keys[a.keys.length - 1][0]) anim = null;
+        } else {
+            const moving = walking && onGround;
+            const bob = moving ? Math.sin(stride * 2) * (0.02 + sprintBlend * 0.02) : Math.sin(time * 1.5) * 0.005;
+            const sway = moving ? Math.sin(stride) * (0.015 + sprintBlend * 0.02) : Math.sin(time) * 0.003;
+            item.position.set(0.35 + sway + sprintBlend * 0.05, -0.35 + bob - sprintBlend * 0.08, -0.5 + sprintBlend * 0.05);
+            item.rotation.set(0.05 - sprintBlend * 0.3, sprintBlend * 0.2, 0.1 + (moving ? Math.sin(stride) * 0.05 : 0) + sprintBlend * 0.35);
+        }
+
+        renderer.render(scene, camera);
+        if (!loading.hidden) loading.hidden = true; // after the first frame is drawn
+    }
+    renderer.setAnimationLoop(loop);
+    return { resume };
+}
+
+let game: { resume: () => void } | undefined;
+$('start-btn').addEventListener('click', async () => {
+    $('start').hidden = true;
+    if (game) return game.resume();
+    $('loading').hidden = false;
+    game = await start();
+});

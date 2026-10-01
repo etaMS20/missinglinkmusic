@@ -7,6 +7,7 @@ const { title } = Astro.props;
 const pages = [
   { href: '/', label: 'Home' },
   { href: '/join-ml.html', label: 'Join ML' },
+    { href: '/gallery.html', label: 'Gallery' },
 ];
 // dev serves /join-ml, the build serves /join-ml.html and /index.html
 const normalize = (path: string) => path.replace(/(index)?\.html$/, '');
