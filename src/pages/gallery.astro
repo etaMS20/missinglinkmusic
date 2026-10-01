@@ -58,6 +58,16 @@ const corner = 'absolute size-6 border-(--primary)';
             </div>
         </div>
 
+        <div id="inventory" hidden class="absolute inset-0 z-30 flex items-center justify-center bg-(--bg)/60">
+            <div class="min-w-72 rounded-lg border-2 border-(--primary) bg-(--card) p-6">
+                <div class="mb-4 flex items-baseline justify-between gap-6">
+                    <h2 class="font-bold tracking-widest text-(--primary)">ITEMS</h2>
+                    <span class="text-xs text-(--muted)">[TAB] schließen</span>
+                </div>
+                <ul id="inventory-list" class="grid gap-2 text-sm"></ul>
+            </div>
+        </div>
+
         <div id="start" class="absolute inset-0 z-40 flex items-center justify-center overflow-hidden bg-(--bg) bg-[linear-gradient(rgba(255,215,0,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,215,0,0.03)_1px,transparent_1px)] bg-size-[40px_40px] p-4">
             <div class="relative max-w-lg rounded-lg border-2 border-(--primary) bg-(--card)/50 p-8 text-center">
                 <div class={`${corner} top-0 left-0 -translate-2 border-t-4 border-l-4`}></div>

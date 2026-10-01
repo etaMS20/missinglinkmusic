@@ -1,9 +1,15 @@
 // Port of the retro-art-gallery R3F scene to plain three.js.
 import * as THREE from 'three';
+import { group, labelTexture, mat, mesh, pointLight, type V3 } from './build';
+import { ITEMS, setFill, STARTER_ITEMS, type ItemId } from './items';
 
-type V3 = [number, number, number];
 const PI = Math.PI;
 const MOVE_SPEED = 3;
+const SPRINT = 1.8; // speed multiplier while Shift is held
+const EYE = 1.6; // eye height above the feet
+const GRAVITY = 20;
+const JUMP_V = 6.3; // ~1m jump, enough for the couch backrest
+const STEP = 0.15; // ledges this low are walked onto without jumping
 const PAINTING_MAX = 1.6; // longest side of a canvas, frames follow the image ratio
 const REACH = 3.5; // how far the crosshair can interact
 const PLAYER_R = 0.3;
@@ -25,52 +31,6 @@ type Artwork = (typeof artworks)[number];
 const lampPositions: V3[] = [[3.5, 0, 3.5], [-3.5, 0, 3.5], [3.5, 0, -3.5], [-3.5, 0, -3.5]];
 
 const $ = (id: string) => document.getElementById(id)!;
-
-// --- builders -------------------------------------------------------------
-
-const mat = (color: string, o: THREE.MeshStandardMaterialParameters = {}) => new THREE.MeshStandardMaterial({ color, ...o });
-
-function group(parent: THREE.Object3D, pos: V3 = [0, 0, 0], rot: V3 = [0, 0, 0]) {
-    const g = new THREE.Group();
-    g.position.set(...pos);
-    g.rotation.set(...rot);
-    parent.add(g);
-    return g;
-}
-
-function mesh(parent: THREE.Object3D, geo: THREE.BufferGeometry, material: THREE.Material, pos: V3 = [0, 0, 0], rot: V3 = [0, 0, 0], shadow?: 'cast' | 'receive') {
-    const m = new THREE.Mesh(geo, material);
-    m.position.set(...pos);
-    m.rotation.set(...rot);
-    m.castShadow = shadow === 'cast';
-    m.receiveShadow = shadow === 'receive';
-    parent.add(m);
-    return m;
-}
-
-function pointLight(parent: THREE.Object3D, color: string, intensity: number, distance: number, pos: V3, castShadow = false) {
-    const l = new THREE.PointLight(color, intensity, distance);
-    l.position.set(...pos);
-    l.castShadow = castShadow;
-    parent.add(l);
-    return l;
-}
-
-// plaque text drawn to a canvas instead of shipping a font engine
-function labelTexture(text: string, color = '#ffd700') {
-    const c = document.createElement('canvas');
-    c.width = 512;
-    c.height = 96;
-    const ctx = c.getContext('2d')!;
-    ctx.fillStyle = color;
-    ctx.font = '40px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, 256, 48, 496);
-    const t = new THREE.CanvasTexture(c);
-    t.colorSpace = THREE.SRGBColorSpace;
-    return t;
-}
 
 // --- scene ----------------------------------------------------------------
 
@@ -157,19 +117,22 @@ async function start() {
         mesh(g, new THREE.BoxGeometry(0.55, 0.3, 0.55), marbleLight, [0, 4.8, 0], undefined, 'cast');
     }
 
-    // collision: walkable floor areas and blocking furniture, all as [minX, maxX, minZ, maxZ]
-    // already grown/shrunk by the player radius
+    // collision. Walkable floor areas as [minX, maxX, minZ, maxZ], already shrunk by the player radius.
     const walkable = [
         [-4, 4, -4, 4],
         [-DOOR_W / 2 + PLAYER_R, DOOR_W / 2 - PLAYER_R, 3.9, CORRIDOR_END - 1], // stop short of the exit door so it stays in view
     ];
-    const blockers: number[][] = [];
-    const block = (x: number, z: number, halfW: number, halfD: number) =>
-        blockers.push([x - halfW - PLAYER_R, x + halfW + PLAYER_R, z - halfD - PLAYER_R, z + halfD + PLAYER_R]);
-    const inside = (x: number, z: number, [x0, x1, z0, z1]: number[]) => x >= x0 && x <= x1 && z >= z0 && z <= z1;
-    const free = (x: number, z: number) => walkable.some((r) => inside(x, z, r)) && !blockers.some((r) => inside(x, z, r));
+    const onFloor = (x: number, z: number, grow = 0) =>
+        walkable.some(([x0, x1, z0, z1]) => x >= x0 - grow && x <= x1 + grow && z >= z0 - grow && z <= z1 + grow);
+    // Furniture as boxes with a top height: blocks you unless you're above it, then you stand on it.
+    type Box = { x0: number; x1: number; z0: number; z1: number; top: number };
+    const boxes: Box[] = [];
+    const box = (x: number, z: number, halfW: number, halfD: number, top: number) => boxes.push({ x0: x - halfW, x1: x + halfW, z0: z - halfD, z1: z + halfD, top });
+    const over = (b: Box, x: number, z: number, margin: number) => x > b.x0 - margin && x < b.x1 + margin && z > b.z0 - margin && z < b.z1 + margin;
+    const groundAt = (x: number, z: number, margin: number) => boxes.reduce((h, b) => (over(b, x, z, margin) ? Math.max(h, b.top) : h), 0);
+    const free = (x: number, z: number, feet: number) => onFloor(x, z) && boxes.every((b) => !over(b, x, z, PLAYER_R) || b.top <= feet + STEP);
 
-    // black leather couch facing the back wall, coffee table in front
+    // black leather couch facing the back wall
     const leather = mat('#141414', { roughness: 0.35, metalness: 0.15 });
     const darkWood = mat('#3b2a1e', { roughness: 0.6 });
     const couch = group(scene, [0, 0, 0.5]);
@@ -182,12 +145,9 @@ async function start() {
         for (const sz of [-1, 1]) mesh(couch, new THREE.CylinderGeometry(0.035, 0.03, 0.1, 6), darkWood, [sx, 0.05, sz * 0.38]);
     }
     mesh(couch, new THREE.BoxGeometry(0.34, 0.34, 0.12), mat('#b8862b', { roughness: 0.9 }), [-0.68, 0.62, 0.02], [-0.2, 0.3, 0.1]);
-    block(0, 0.5, 1.1, 0.45);
-
-    const table = group(scene, [0, 0, -0.7]);
-    mesh(table, new THREE.BoxGeometry(1.2, 0.05, 0.6), darkWood, [0, 0.4, 0], undefined, 'cast');
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) mesh(table, new THREE.BoxGeometry(0.05, 0.38, 0.05), darkWood, [sx * 0.55, 0.19, sz * 0.25]);
-    block(0, -0.7, 0.6, 0.3);
+    box(0, 0.5, 1.1, 0.45, 0.48); // seat
+    box(0, 0.84, 1.1, 0.11, 0.9); // backrest
+    for (const sx of [-1, 1]) box(sx, 0.5, 0.1, 0.45, 0.7); // armrests
 
     // doorway frame; the entry door stands open against the wall, the exit door is closed
     function door(z: number, open: boolean) {
@@ -285,7 +245,7 @@ async function start() {
         mesh(glow, new THREE.CylinderGeometry(0.24, 0.29, 0.26, 8), glowMat, [0, 0.1, 0]);
         mesh(glow, new THREE.CylinderGeometry(0.07, 0.07, 1.62, 8), glowMat, [0, 0.9, 0]);
         mesh(glow, new THREE.ConeGeometry(0.35, 0.48, 8), glowMat, [0, 1.8, 0]);
-        block(p[0], p[2], 0.25, 0.25);
+        box(p[0], p[2], 0.25, 0.25, 2.1);
         const lamp = { on: true, shade, bulb, light, glow };
         g.userData.target = lamp;
         return lamp;
@@ -300,16 +260,21 @@ async function start() {
         lamp.light.intensity = on ? 0.9 : 0;
     }
 
-    // wine glass and blocky hand, attached to the camera
+    // held item and blocky hand, attached to the camera
     const item = group(camera);
-    const glass = group(item);
-    glass.scale.setScalar(0.15);
-    const clearGlass = mat('#ffffff', { transparent: true, opacity: 0.4, roughness: 0.1 });
-    mesh(glass, new THREE.CylinderGeometry(0.5, 0.3, 0.8, 16, 1, true), mat('#ffffff', { transparent: true, opacity: 0.3, roughness: 0.1, metalness: 0.1, side: THREE.DoubleSide }), [0, 0.8, 0]);
-    mesh(glass, new THREE.CylinderGeometry(0.42, 0.28, 0.5, 16), mat('#6b0f1a', { roughness: 0.3, metalness: 0.1, transparent: true, opacity: 0.9 }), [0, 0.6, 0]);
-    mesh(glass, new THREE.CylinderGeometry(0.05, 0.05, 0.8, 8), clearGlass);
-    mesh(glass, new THREE.CylinderGeometry(0.35, 0.4, 0.1, 16), clearGlass, [0, -0.45, 0]);
-    mesh(glass, new THREE.PlaneGeometry(0.08, 0.4), new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.3 }), [0.15, 0.8, 0.2], [0, 0, 0.3]);
+    const holder = group(item);
+    const models = new Map<ItemId, THREE.Group>();
+    const inventory: ItemId[] = [...STARTER_ITEMS];
+    let equipped: ItemId = inventory[0];
+    function showItem(id: ItemId) {
+        holder.clear();
+        if (!models.has(id)) models.set(id, ITEMS[id].build());
+        const model = models.get(id)!;
+        setFill(model, 1);
+        holder.add(model);
+        equipped = id;
+    }
+    showItem(equipped);
     const hand = group(item, [0, -0.08, 0.02]);
     hand.scale.setScalar(0.12);
     const skin = mat('#d4a574', { roughness: 0.8 });
@@ -329,6 +294,9 @@ async function start() {
     const modal = $('modal');
     const hint = $('hint');
     const crosshair = $('crosshair');
+    const inventoryEl = $('inventory');
+    const overlayOpen = () => !modal.hidden || !inventoryEl.hidden;
+    let paused = false;
     const keys = new Set<string>();
     const held = (...codes: string[]) => codes.some((c) => keys.has(c));
     type Lamp = (typeof lamps)[number];
@@ -379,16 +347,123 @@ async function start() {
         });
     }
 
+    // --- item animations: keyframed poses of the hand+item, relative to the camera
+    type Pose = { pos: V3; rot: V3 };
+    const REST: Pose = { pos: [0.35, -0.35, -0.5], rot: [0.05, 0, 0.1] };
+    const MOUTH: Pose = { pos: [0.08, -0.16, -0.32], rot: [0.7, 0, 0.2] };
+    const MOUTH_TILTED: Pose = { pos: [0.08, -0.13, -0.3], rot: [1.5, 0, 0.25] };
+    const WINDUP: Pose = { pos: [0.45, -0.12, -0.45], rot: [-0.4, 0, -0.2] };
+    const THROWN: Pose = { pos: [0.25, -0.2, -0.75], rot: [0.6, 0, 0.3] };
+    const POCKET: Pose = { pos: [0.4, -1.0, -0.4], rot: [0.3, 0, 0.4] };
+    const ANIMS = {
+        // drink it empty, toss it, pull a fresh one out of the pocket
+        drink: { keys: [[0, REST], [0.35, MOUTH], [1.05, MOUTH_TILTED], [1.25, WINDUP], [1.4, THROWN], [1.75, POCKET], [2.25, REST]] as [number, Pose][], drain: [0.35, 1.05], release: 1.33, swap: 1.75 },
+        // switch to another item from the inventory
+        swap: { keys: [[0, REST], [0.35, POCKET], [0.85, REST]] as [number, Pose][], drain: null, release: null, swap: 0.35 },
+    };
+    let anim: { kind: keyof typeof ANIMS; t: number; next: ItemId; released: boolean; swapped: boolean } | null = null;
+    const smooth = (x: number) => x * x * (3 - 2 * x);
+    function animPose(keyframes: [number, Pose][], t: number): Pose {
+        let i = 1;
+        while (i < keyframes.length - 1 && t > keyframes[i][0]) i++;
+        const [t0, a] = keyframes[i - 1];
+        const [t1, b] = keyframes[i];
+        const k = smooth(THREE.MathUtils.clamp((t - t0) / (t1 - t0), 0, 1));
+        const mix = (u: V3, v: V3) => u.map((n, j) => n + (v[j] - n) * k) as V3;
+        return { pos: mix(a.pos, b.pos), rot: mix(a.rot, b.rot) };
+    }
+
+    // tossed items fly with gravity and stay where they land
+    const thrownItems: { obj: THREE.Object3D; v: THREE.Vector3; spin: THREE.Vector3; lyingY: number; resting: boolean }[] = [];
+    function toss() {
+        const obj = ITEMS[equipped].build();
+        setFill(obj, 0);
+        holder.children[0].getWorldPosition(obj.position);
+        holder.children[0].getWorldQuaternion(obj.quaternion);
+        scene.add(obj);
+        const dir = camera.getWorldDirection(new THREE.Vector3());
+        const v = dir.multiplyScalar(4.5).add(new THREE.Vector3(0, 2.5, 0)).addScaledVector(right, 0.6);
+        const spin = new THREE.Vector3(Math.random() * 10 - 5, Math.random() * 6 - 3, Math.random() * 10 - 5);
+        thrownItems.push({ obj, v, spin, lyingY: ITEMS[equipped].lyingY, resting: false });
+        // ponytail: oldest tossed items vanish past 12, raise the cap if a messier floor is wanted
+        if (thrownItems.length > 12) {
+            const old = thrownItems.shift()!.obj;
+            scene.remove(old);
+            old.traverse((o) => {
+                if (o instanceof THREE.Mesh) {
+                    o.geometry.dispose();
+                    (o.material as THREE.Material).dispose();
+                }
+            });
+        }
+    }
+
+    // --- inventory menu (Tab)
+    function renderInventory() {
+        const list = $('inventory-list');
+        list.replaceChildren(
+            ...inventory.map((id, i) => {
+                const li = document.createElement('li');
+                const btn = document.createElement('button');
+                btn.className = 'flex w-full items-center gap-3 rounded border px-3 py-2 text-left hover:border-(--primary) ' + (id === equipped ? 'border-(--primary) bg-(--primary)/15' : 'border-(--border)');
+                btn.textContent = `[${i + 1}] ${ITEMS[id].icon} ${ITEMS[id].name}${id === equipped ? '  ·  in der Hand' : ''}`;
+                btn.addEventListener('click', () => equip(id));
+                li.append(btn);
+                return li;
+            }),
+        );
+    }
+    function toggleInventory(open = inventoryEl.hidden) {
+        if (open) renderInventory();
+        inventoryEl.hidden = !open;
+    }
+    function equip(id: ItemId) {
+        toggleInventory(false);
+        if (anim || id === equipped) return;
+        anim = { kind: 'swap', t: 0, next: id, released: false, swapped: false };
+    }
+
+    // --- pause back to the start screen (Escape)
+    function pause() {
+        paused = true;
+        keys.clear();
+        renderer.setAnimationLoop(null);
+        $('start-btn').textContent = 'WEITER';
+        $('start').hidden = false;
+    }
+    function resume() {
+        paused = false;
+        last = performance.now();
+        renderer.setAnimationLoop(loop);
+    }
+
     for (const el of document.querySelectorAll('[data-close]')) el.addEventListener('click', closeModal);
     addEventListener('keydown', (e) => {
+        if (paused) return;
+        if (['Space', 'Tab'].includes(e.code)) e.preventDefault(); // no page scroll / focus jump
         keys.add(e.code);
-        if (e.code === 'Escape') closeModal();
-        if (!modal.hidden || e.repeat || (e.code !== 'KeyE' && e.code !== 'Space')) return;
-        e.preventDefault();
-        if (!aimed) return;
-        if ('glow' in aimed) toggleLamp(aimed);
-        else if ('artwork' in aimed) openModal(aimed.artwork);
-        else location.href = '/';
+        if (e.repeat) return;
+        if (e.code === 'Escape') {
+            if (!modal.hidden) closeModal();
+            else if (!inventoryEl.hidden) toggleInventory(false);
+            else pause();
+        } else if (e.code === 'Tab' && modal.hidden) {
+            toggleInventory();
+        } else if (!inventoryEl.hidden && /^Digit[1-9]$/.test(e.code)) {
+            const id = inventory[Number(e.code.slice(5)) - 1];
+            if (id) equip(id);
+        } else if (overlayOpen()) {
+            return;
+        } else if (e.code === 'Space' && onGround) {
+            vy = JUMP_V;
+            onGround = false;
+        } else if (e.code === 'KeyE') {
+            if (!aimed) {
+                if (!anim) anim = { kind: 'drink', t: 0, next: equipped, released: false, swapped: false };
+            } else if ('glow' in aimed) toggleLamp(aimed);
+            else if ('artwork' in aimed) openModal(aimed.artwork);
+            else location.href = '/';
+        }
     });
     addEventListener('keyup', (e) => keys.delete(e.code));
     addEventListener('blur', () => keys.clear());
@@ -403,36 +478,92 @@ async function start() {
     const step = new THREE.Vector3();
     let last = 0;
     let time = 0;
+    let feet = 0; // height of the player's feet
+    let vy = 0;
+    let onGround = true;
+    let landDip = 0; // camera dip after landing
+    let stride = 0; // walk cycle phase for head and item bob
+    let sprintBlend = 0; // 0 walking .. 1 sprinting, eased
     const loading = $('loading');
     await loaded;
     loadingStatus('Bereite Shader vor', 75);
     await nextFrame();
     await renderer.compileAsync(scene, camera); // compile shaders up front, no stutter on the first frames
     loadingStatus('Rendere Szene', 95);
-    renderer.setAnimationLoop((t) => {
+    function loop(t: number) {
         const dt = Math.min((t - last) / 1000, 0.1);
         last = t;
         time += dt;
 
         let walking = false;
-        if (modal.hidden) {
+        let sprinting = false;
+        camera.getWorldDirection(forward).setY(0).normalize();
+        right.crossVectors(forward, camera.up);
+        if (!overlayOpen()) {
             const f = Number(held('KeyW', 'ArrowUp')) - Number(held('KeyS', 'ArrowDown'));
             const r = Number(held('KeyD', 'ArrowRight')) - Number(held('KeyA', 'ArrowLeft'));
             walking = f !== 0 || r !== 0;
-            camera.getWorldDirection(forward).setY(0).normalize();
-            right.crossVectors(forward, camera.up);
-            step.set(0, 0, 0).addScaledVector(forward, f * MOVE_SPEED * dt).addScaledVector(right, r * MOVE_SPEED * dt);
+            sprinting = walking && held('ShiftLeft', 'ShiftRight');
+            const speed = MOVE_SPEED * (sprinting ? SPRINT : 1) * dt;
+            step.set(0, 0, 0).addScaledVector(forward, f * speed).addScaledVector(right, r * speed);
             // per axis, so you slide along walls and furniture instead of sticking
             const { x, z } = camera.position;
-            if (free(x + step.x, z)) camera.position.x += step.x;
-            if (free(camera.position.x, z + step.z)) camera.position.z += step.z;
+            if (free(x + step.x, z, feet)) camera.position.x += step.x;
+            if (free(camera.position.x, z + step.z, feet)) camera.position.z += step.z;
+        }
+
+        // gravity, jumping and standing on furniture
+        vy -= GRAVITY * dt;
+        feet += vy * dt;
+        const ground = groundAt(camera.position.x, camera.position.z, PLAYER_R / 2);
+        if (feet <= ground) {
+            if (!onGround && vy < -3) landDip = Math.min(0.12, -vy * 0.015);
+            feet = ground;
+            vy = 0;
+            onGround = true;
+        } else onGround = false;
+
+        // sprint feel: faster stride, wider FOV, item lowered
+        sprintBlend += ((sprinting ? 1 : 0) - sprintBlend) * Math.min(1, dt * 8);
+        const fov = 60 + sprintBlend * 8;
+        if (Math.abs(camera.fov - fov) > 0.01) {
+            camera.fov = fov;
+            camera.updateProjectionMatrix();
+        }
+        if (walking && onGround) stride += dt * (9 + sprintBlend * 5);
+        const bobAmp = walking && onGround ? 0.025 + sprintBlend * 0.025 : 0;
+        landDip *= Math.exp(-dt * 10);
+        camera.position.y = feet + EYE + Math.sin(stride * 2) * bobAmp - landDip;
+
+        // tossed items
+        for (const th of thrownItems) {
+            if (th.resting) continue;
+            th.v.y -= GRAVITY * dt;
+            const { x, z } = th.obj.position;
+            th.obj.position.addScaledVector(th.v, dt);
+            if (!onFloor(th.obj.position.x, th.obj.position.z, 0.75)) {
+                th.obj.position.x = x; // hit a wall: drop straight down
+                th.obj.position.z = z;
+                th.v.x = th.v.z = 0;
+            }
+            th.obj.rotation.x += th.spin.x * dt;
+            th.obj.rotation.y += th.spin.y * dt;
+            th.obj.rotation.z += th.spin.z * dt;
+            const floorY = groundAt(th.obj.position.x, th.obj.position.z, 0) + th.lyingY;
+            if (th.obj.position.y <= floorY) {
+                th.obj.position.y = floorY;
+                th.obj.rotation.set(0, 0, 0);
+                th.obj.rotateY(Math.random() * PI * 2);
+                th.obj.rotateX(PI / 2); // on its side
+                th.resting = true;
+            }
         }
 
         // whatever the crosshair points at first, if it's interactive
         raycaster.setFromCamera(screenCenter, camera);
         let o: THREE.Object3D | null = raycaster.intersectObjects(solids)[0]?.object ?? null;
         while (o && !o.userData.target) o = o.parent;
-        aimed = modal.hidden ? o?.userData.target : undefined;
+        aimed = overlayOpen() ? undefined : o?.userData.target;
 
         for (const p of paintings) {
             const on = p === aimed;
@@ -450,19 +581,44 @@ async function start() {
             crosshair.classList.toggle('aimed', !!text);
         }
 
-        // walking bob / idle sway of the held glass
-        const bob = walking ? Math.sin(time * 10) * 0.02 : Math.sin(time * 1.5) * 0.005;
-        const sway = walking ? Math.sin(time * 5) * 0.015 : Math.sin(time) * 0.003;
-        item.position.set(0.35 + sway, -0.35 + bob, -0.5);
-        item.rotation.set(0.05, 0, 0.1 + (walking ? Math.sin(time * 8) * 0.05 : 0));
+        // held item: keyframed animation, else rest pose with walk bob / idle sway
+        if (anim) {
+            const a = ANIMS[anim.kind];
+            anim.t += dt;
+            const pose = animPose(a.keys, anim.t);
+            item.position.set(...pose.pos);
+            item.rotation.set(...pose.rot);
+            if (a.drain && !anim.released) setFill(holder.children[0], 1 - THREE.MathUtils.clamp((anim.t - a.drain[0]) / (a.drain[1] - a.drain[0]), 0, 1));
+            if (a.release !== null && !anim.released && anim.t >= a.release) {
+                anim.released = true;
+                toss();
+                holder.visible = false;
+            }
+            if (!anim.swapped && anim.t >= a.swap) {
+                anim.swapped = true;
+                showItem(anim.next);
+                holder.visible = true;
+            }
+            if (anim.t >= a.keys[a.keys.length - 1][0]) anim = null;
+        } else {
+            const moving = walking && onGround;
+            const bob = moving ? Math.sin(stride * 2) * (0.02 + sprintBlend * 0.02) : Math.sin(time * 1.5) * 0.005;
+            const sway = moving ? Math.sin(stride) * (0.015 + sprintBlend * 0.02) : Math.sin(time) * 0.003;
+            item.position.set(0.35 + sway + sprintBlend * 0.05, -0.35 + bob - sprintBlend * 0.08, -0.5 + sprintBlend * 0.05);
+            item.rotation.set(0.05 - sprintBlend * 0.3, sprintBlend * 0.2, 0.1 + (moving ? Math.sin(stride) * 0.05 : 0) + sprintBlend * 0.35);
+        }
 
         renderer.render(scene, camera);
         if (!loading.hidden) loading.hidden = true; // after the first frame is drawn
-    });
+    }
+    renderer.setAnimationLoop(loop);
+    return { resume };
 }
 
-$('start-btn').addEventListener('click', () => {
+let game: { resume: () => void } | undefined;
+$('start-btn').addEventListener('click', async () => {
     $('start').hidden = true;
+    if (game) return game.resume();
     $('loading').hidden = false;
-    start();
-}, { once: true });
+    game = await start();
+});
