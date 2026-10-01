@@ -10,7 +10,7 @@ const EYE = 1.6; // eye height above the feet
 const GRAVITY = 20;
 const JUMP_V = 6.3; // ~1m jump, enough for the couch backrest
 const STEP = 0.15; // ledges this low are walked onto without jumping
-const BREAK_FORCE = 6; // kicks harder than this shatter the glass; only reachable while sprinting
+const BREAK_FORCE = 12; // kicks harder than this shatter the glass; only reachable while sprinting
 const PAINTING_MAX = 1.6; // longest side of a canvas, frames follow the image ratio
 const REACH = 3.5; // how far the crosshair can interact
 const PLAYER_R = 0.3;
@@ -120,11 +120,17 @@ async function start() {
 
     // collision. Walkable floor areas as [minX, maxX, minZ, maxZ], already shrunk by the player radius.
     const walkable = [
-        [-4, 4, -4, 4],
+        [-4.6, 4.6, -4.6, 4.6],
         [-DOOR_W / 2 + PLAYER_R, DOOR_W / 2 - PLAYER_R, 3.9, CORRIDOR_END - 1], // stop short of the exit door so it stays in view
     ];
-    const onFloor = (x: number, z: number, grow = 0) =>
-        walkable.some(([x0, x1, z0, z1]) => x >= x0 - grow && x <= x1 + grow && z >= z0 - grow && z <= z1 + grow);
+    const inRects = (rects: number[][], x: number, z: number) => rects.some(([x0, x1, z0, z1]) => x >= x0 && x <= x1 && z >= z0 && z <= z1);
+    const onFloor = (x: number, z: number) => inRects(walkable, x, z);
+    // where flying debris can go: right up to the walls, through the doorway into the corridor
+    const debrisArea = [
+        [-4.9, 4.9, -4.9, 4.9],
+        [-DOOR_W / 2 + 0.05, DOOR_W / 2 - 0.05, 4.8, CORRIDOR_END - 0.1],
+    ];
+    const inDebrisArea = (x: number, z: number) => inRects(debrisArea, x, z);
     // Furniture as boxes with a top height: blocks you unless you're above it, then you stand on it.
     type Box = { x0: number; x1: number; z0: number; z1: number; top: number };
     const boxes: Box[] = [];
@@ -132,6 +138,10 @@ async function start() {
     const over = (b: Box, x: number, z: number, margin: number) => x > b.x0 - margin && x < b.x1 + margin && z > b.z0 - margin && z < b.z1 + margin;
     const groundAt = (x: number, z: number, margin: number) => boxes.reduce((h, b) => (over(b, x, z, margin) ? Math.max(h, b.top) : h), 0);
     const free = (x: number, z: number, feet: number) => onFloor(x, z) && boxes.every((b) => !over(b, x, z, PLAYER_R) || b.top <= feet + STEP);
+    // debris bounces off walls and off furniture it hits below the top (above it, it lands on it)
+    const debrisFree = (x: number, z: number, bottom: number) => inDebrisArea(x, z) && boxes.every((b) => !over(b, x, z, 0) || bottom >= b.top);
+
+    for (const x of [-4.5, 4.5]) for (const z of [-4.5, 4.5]) box(x, z, 0.3, 0.3, 5); // pillars
 
     // black leather couch facing the back wall
     const leather = mat('#141414', { roughness: 0.35, metalness: 0.15 });
@@ -351,22 +361,30 @@ async function start() {
     // --- item animations: keyframed poses of the hand+item, relative to the camera
     type Pose = { pos: V3; rot: V3 };
     const REST: Pose = { pos: [0.35, -0.35, -0.5], rot: [0.05, 0, 0.1] };
-    const MOUTH: Pose = { pos: [0.08, -0.16, -0.32], rot: [0.7, 0, 0.2] };
-    const SIP: Pose = { pos: [0.08, -0.14, -0.31], rot: [1.1, 0, 0.22] };
-    const MOUTH_TILTED: Pose = { pos: [0.08, -0.12, -0.3], rot: [1.6, 0, 0.25] };
-    const SHOULDER: Pose = { pos: [0.32, 0.05, -0.05], rot: [-1.3, 0, -0.4] }; // flicked up and back past the head
+    // deliberately goofy: overshooting tilts, wobbling, a big overhead fling, a twirl out of the pocket
+    const MOUTH: Pose = { pos: [0.08, -0.22, -0.34], rot: [0.9, 0, 0.4] };
+    const CHUG: Pose = { pos: [0.08, -0.16, -0.34], rot: [2.1, 0, -0.2] }; // way past upside down
+    const SHOW: Pose = { pos: [0, -0.2, -0.45], rot: [0.15, 0, 0] }; // held up in front: look, empty!
+    const WINDUP: Pose = { pos: [0.15, -0.28, -0.55], rot: [0.9, 0, 0.3] }; // dip forward before the fling
+    const FLING: Pose = { pos: [0.35, 0.3, 0.05], rot: [-2.3, 0, -0.6] }; // up and over the shoulder
     const POCKET: Pose = { pos: [0.4, -1.0, -0.4], rot: [0.3, 0, 0.4] };
-    type Anim = { keys: [number, Pose][]; drain: [number, number, number, number][]; release: number | null; swap: number };
+    const TWIRLED: Pose = { pos: REST.pos, rot: [REST.rot[0], PI * 2, REST.rot[2]] }; // REST after a full spin
+    type Anim = {
+        keys: [number, Pose][];
+        drain: [number, number, number, number][]; // [from t, to t, from level, to level]
+        release: number | null;
+        swap: number;
+    };
     const ANIMS: Record<'drink' | 'swap', Anim> = {
-        // two quick sips, one long gulp, over the shoulder with it, fresh one from the pocket
+        // one long chug, show off the empty glass, fling it over the shoulder, twirl a fresh one out of the pocket
         drink: {
-            keys: [[0, REST], [0.25, MOUTH], [0.4, SIP], [0.55, MOUTH], [0.7, SIP], [0.85, MOUTH], [1.6, MOUTH_TILTED], [1.72, SHOULDER], [1.95, POCKET], [2.4, REST]],
-            drain: [[0.25, 0.4, 1, 0.85], [0.55, 0.7, 0.85, 0.7], [0.85, 1.6, 0.7, 0]], // [from t, to t, from level, to level]
-            release: 1.7,
-            swap: 1.95,
+            keys: [[0, REST], [0.3, MOUTH], [1.3, CHUG], [1.55, SHOW], [2.0, SHOW], [2.2, WINDUP], [2.33, FLING], [2.6, POCKET], [3.1, TWIRLED]],
+            drain: [[0.3, 1.3, 1, 0]],
+            release: 2.3,
+            swap: 2.6,
         },
         // switch to another item from the inventory
-        swap: { keys: [[0, REST], [0.35, POCKET], [0.85, REST]], drain: [], release: null, swap: 0.35 },
+        swap: { keys: [[0, REST], [0.35, POCKET], [0.85, TWIRLED]], drain: [], release: null, swap: 0.35 },
     };
     const fillAt = (drain: Anim['drain'], t: number) =>
         drain.reduce((level, [t0, t1, from, to]) => (t <= t0 ? level : from + (to - from) * Math.min(1, (t - t0) / (t1 - t0))), 1);
@@ -413,8 +431,8 @@ async function start() {
         holder.children[0].getWorldPosition(obj.position);
         holder.children[0].getWorldQuaternion(obj.quaternion);
         // backwards over the right shoulder
-        const v = forward.clone().multiplyScalar(-rand(2.5, 3.5)).addScaledVector(right, rand(0.3, 0.9)).setY(rand(2.5, 3.5));
-        launch({ obj, v, spin: randomSpin(8), restY: ITEMS[equipped].lyingY, resting: false, item: equipped });
+        const v = forward.clone().multiplyScalar(-rand(4, 5.5)).addScaledVector(right, rand(0.3, 0.9)).setY(rand(3.5, 4.5));
+        launch({ obj, v, spin: randomSpin(14), restY: ITEMS[equipped].lyingY, resting: false, item: equipped });
     }
 
     const shardGeo = new THREE.TetrahedronGeometry(0.03);
@@ -441,8 +459,9 @@ async function start() {
             const dz = d.obj.position.z - camera.position.z;
             const dist = Math.hypot(dx, dz) || 1;
             if (dist > PLAYER_R + 0.15) continue;
-            const force = speed * rand(0.6, 1.6);
-            d.v.set((dx / dist) * force, force * rand(0.3, 0.7), (dz / dist) * force);
+            // cartoon physics: way more oomph than a real foot would give
+            const force = speed * rand(1.5, 3.5);
+            d.v.set((dx / dist) * force, force * rand(0.4, 0.8), (dz / dist) * force);
             if (force > BREAK_FORCE) {
                 shatter(d);
                 continue;
@@ -594,12 +613,18 @@ async function start() {
         for (const d of [...tossed, ...shards]) {
             if (d.resting) continue;
             d.v.y -= GRAVITY * dt;
-            const { x, z } = d.obj.position;
-            d.obj.position.addScaledVector(d.v, dt);
-            if (!onFloor(d.obj.position.x, d.obj.position.z, 0.75)) {
-                d.obj.position.x = x; // hit a wall: drop straight down
-                d.obj.position.z = z;
-                d.v.x = d.v.z = 0;
+            // bounce off walls (per axis) and the ceiling
+            const p = d.obj.position;
+            const bottom = p.y - d.restY;
+            if (debrisFree(p.x + d.v.x * dt, p.z, bottom)) p.x += d.v.x * dt;
+            else d.v.x *= -0.7;
+            if (debrisFree(p.x, p.z + d.v.z * dt, bottom)) p.z += d.v.z * dt;
+            else d.v.z *= -0.7;
+            p.y += d.v.y * dt;
+            const ceiling = p.z > 5 ? 3 : 5; // corridor is lower than the room
+            if (p.y > ceiling - 0.1) {
+                p.y = ceiling - 0.1;
+                d.v.y = -Math.abs(d.v.y) * 0.5;
             }
             d.obj.rotation.x += d.spin.x * dt;
             d.obj.rotation.y += d.spin.y * dt;
@@ -607,6 +632,11 @@ async function start() {
             const floorY = groundAt(d.obj.position.x, d.obj.position.z, 0) + d.restY;
             if (d.obj.position.y <= floorY) {
                 d.obj.position.y = floorY;
+                if (d.v.y < -2.5) {
+                    // hop along the floor until it runs out of energy
+                    d.v.set(d.v.x * 0.7, -d.v.y * 0.45, d.v.z * 0.7);
+                    continue;
+                }
                 d.obj.rotation.set(0, rand(0, PI * 2), 0); // shards lie flat
                 if (d.item) d.obj.rotateX(PI / 2); // items on their side
                 d.resting = true;
