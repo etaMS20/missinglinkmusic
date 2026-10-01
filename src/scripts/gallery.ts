@@ -697,6 +697,9 @@ async function start() {
     await loaded;
     loadingStatus('Bereite Shader vor', 75);
     await nextFrame();
+    // twice: the second capture renders the room with its bounce map, compiling the cube-map shader
+    // variants a lamp toggle needs. Otherwise the first toggle stalls for over a second.
+    captureBounce();
     captureBounce();
     await renderer.compileAsync(scene, camera); // compile shaders up front, no stutter on the first frames
     loadingStatus('Rendere Szene', 95);
