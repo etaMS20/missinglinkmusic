@@ -6,3 +6,6 @@
 *.launch
 .settings/
 *.sublime-workspace
+node_modules/
+dist/
+.astro/
