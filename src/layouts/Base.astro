@@ -1,13 +1,14 @@
 ---
 import '../styles/global.css';
 import MovingText from '../components/MovingText.astro';
+interface Props { title: string }
 const { title } = Astro.props;
 const pages = [
   { href: '/', label: 'Home' },
   { href: '/join-ml.html', label: 'Join ML' },
 ];
 // dev serves /join-ml, the build serves /join-ml.html and /index.html
-const normalize = (path) => path.replace(/(index)?\.html$/, '');
+const normalize = (path: string) => path.replace(/(index)?\.html$/, '');
 const current = normalize(Astro.url.pathname);
 const banner = 'fixed left-0 h-[50px] flex items-center whitespace-nowrap bg-[url(/img/construction-area.png)]';
 ---
