@@ -1,0 +1,107 @@
+---
+import '../styles/global.css';
+// standalone page: the fullscreen canvas doesn't fit Base's banners and nav
+const corner = 'absolute size-6 border-(--primary)';
+---
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Gallery – Missing Link</title>
+    <link rel="icon" type="image/png" href="/favicon.png">
+</head>
+<body class="overflow-hidden bg-(--bg) font-mono text-(--fg)">
+    <div id="gallery" class="relative w-screen h-svh">
+        <!-- scanlines + CRT vignette -->
+        <div class="pointer-events-none absolute inset-0 z-10 bg-[repeating-linear-gradient(0deg,transparent,transparent_2px,rgba(0,0,0,0.03)_2px,rgba(0,0,0,0.03)_4px)]"></div>
+        <div class="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(ellipse_at_center,transparent_60%,rgba(0,0,0,0.4)_100%)]"></div>
+
+        <header class="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-between p-4">
+            <div>
+                <h1 class="text-xl font-bold tracking-widest text-(--primary)">RETRO GALLERY</h1>
+                <p class="text-xs tracking-wider text-(--muted)">VIRTUAL ART EXPERIENCE v1.0</p>
+            </div>
+            <div class="text-right text-xs text-(--muted)">
+                <div class="text-(--primary)">WERKE: 6</div>
+                <div>RAUM: HAUPTGALERIE</div>
+            </div>
+        </header>
+
+        <div class="pointer-events-none absolute bottom-4 left-4 z-20 rounded border border-(--border) bg-(--card)/80 p-3 text-xs text-(--muted)">
+            <div class="mb-2 font-bold text-(--primary)">STEUERUNG</div>
+            <div class="grid grid-cols-2 gap-x-4 gap-y-1">
+                <span>W/A/S/D</span><span class="text-(--fg)">Bewegen</span>
+                <span>Maus ziehen</span><span class="text-(--fg)">Umsehen</span>
+                <span>E oder Leertaste</span><span class="text-(--fg)">Interagieren</span>
+            </div>
+        </div>
+
+        <!-- crosshair -->
+        <div class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+            <div id="crosshair" class="size-2 rotate-45 border border-(--primary)/50 transition-transform [&.aimed]:scale-150 [&.aimed]:border-(--primary)"></div>
+        </div>
+
+        <div id="hint" hidden class="pointer-events-none absolute bottom-32 left-1/2 z-20 -translate-x-1/2">
+            <div class="flex items-center gap-2 rounded border border-(--border) bg-(--card)/90 px-4 py-2 text-sm">
+                <span class="rounded bg-(--primary) px-2 py-0.5 text-xs font-bold text-black">E</span>
+                <span id="hint-text"></span>
+            </div>
+        </div>
+
+        <div id="modal" hidden class="absolute inset-0 z-30 flex items-center justify-center bg-(--bg)/80 backdrop-blur-sm">
+            <div class="relative mx-4 max-w-2xl rounded-lg border-2 border-(--primary) bg-(--card) p-6">
+                <button data-close aria-label="Schließen" class="absolute top-2 right-2 rounded px-2 text-xl text-(--muted) hover:bg-(--border)">×</button>
+                <img id="modal-img" class="mx-auto mb-4 max-h-[60svh] rounded border-2 border-(--border) [image-rendering:pixelated]" alt="">
+                <h2 id="modal-title" class="mb-1 text-xl font-bold text-(--primary)"></h2>
+                <p id="modal-meta" class="mb-3 text-sm text-(--accent)"></p>
+                <p id="modal-desc" class="mb-4 text-sm leading-relaxed"></p>
+                <button data-close class="w-full rounded bg-(--primary) py-2 font-bold text-black hover:opacity-90">SCHLIESSEN [ESC]</button>
+            </div>
+        </div>
+
+        <div id="start" class="absolute inset-0 z-40 flex items-center justify-center overflow-hidden bg-(--bg) bg-[linear-gradient(rgba(255,215,0,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,215,0,0.03)_1px,transparent_1px)] bg-size-[40px_40px] p-4">
+            <div class="relative max-w-lg rounded-lg border-2 border-(--primary) bg-(--card)/50 p-8 text-center">
+                <div class={`${corner} top-0 left-0 -translate-2 border-t-4 border-l-4`}></div>
+                <div class={`${corner} top-0 right-0 translate-x-2 -translate-y-2 border-t-4 border-r-4`}></div>
+                <div class={`${corner} bottom-0 left-0 -translate-x-2 translate-y-2 border-b-4 border-l-4`}></div>
+                <div class={`${corner} right-0 bottom-0 translate-2 border-r-4 border-b-4`}></div>
+
+                <h1 class="text-4xl font-bold tracking-widest text-(--primary) md:text-5xl">RETRO</h1>
+                <h1 class="mb-4 text-4xl font-bold tracking-widest md:text-5xl">GALLERY</h1>
+                <div class="my-6 h-px bg-(--primary)/50"></div>
+                <p class="mb-6 text-sm text-(--muted)">VIRTUAL ART EXPERIENCE</p>
+
+                <div class="mb-8 space-y-1 rounded bg-(--border)/50 p-4 text-left text-xs text-(--muted)">
+                    <p class="font-bold text-(--fg)">MISSION:</p>
+                    <p>Erkunde die virtuelle Kunstgalerie und entdecke Meisterwerke der Kunstgeschichte in einer immersiven 3D-Umgebung.</p>
+                    <p class="pt-3 text-(--primary)">STEUERUNG:</p>
+                    <p>W/A/S/D - Bewegen</p>
+                    <p>Maus click + ziehen - Umsehen</p>
+                    <p>E - Mit Objekten interagieren</p>
+                </div>
+
+                <button id="start-btn" class="w-full rounded bg-(--primary) py-4 text-lg font-bold tracking-widest text-black hover:opacity-90">START GAME</button>
+                <p class="mt-4 text-xs text-(--accent)">Benötigt eine Tastatur zum Laufen.</p>
+                <a href="/" class="mt-2 inline-block text-xs text-(--muted) hover:underline">← Zurück zu Missing Link</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        import '../scripts/gallery';
+    </script>
+</body>
+</html>
+
+<style is:global>
+    body {
+        --bg: oklch(0.25 0.08 260);
+        --fg: oklch(0.95 0 0);
+        --card: oklch(0.2 0.06 260);
+        --primary: oklch(0.75 0.18 145);
+        --accent: oklch(0.7 0.2 60);
+        --muted: oklch(0.7 0 0);
+        --border: oklch(0.4 0.1 260);
+    }
+</style>
