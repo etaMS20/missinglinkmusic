@@ -10,7 +10,7 @@ const EYE = 1.6; // eye height above the feet
 const GRAVITY = 20;
 const JUMP_V = 6.3; // ~1m jump, enough for the couch backrest
 const STEP = 0.15; // ledges this low are walked onto without jumping
-const BREAK_FORCE = 12; // kicks harder than this shatter the glass; only reachable while sprinting
+const BREAK_FORCE = 16; // kicks harder than this shatter the glass; only reachable while sprinting
 const PAINTING_MAX = 1.6; // longest side of a canvas, frames follow the image ratio
 const REACH = 3.5; // how far the crosshair can interact
 const PLAYER_R = 0.3;
@@ -654,7 +654,7 @@ async function start() {
             // every bounce makes the next one likelier to break it
             if (hit && d.item) {
                 d.bounces = (d.bounces ?? 0) + 1;
-                if (Math.random() < 0.25 * d.bounces) shatter(d);
+                if (Math.random() < 0.1 * d.bounces) shatter(d);
             }
         }
 
