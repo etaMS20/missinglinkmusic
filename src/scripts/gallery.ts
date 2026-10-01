@@ -6,7 +6,11 @@ const PI = Math.PI;
 const MOVE_SPEED = 3;
 const PAINTING_MAX = 1.6; // longest side of a canvas, frames follow the image ratio
 const REACH = 3.5; // how far the crosshair can interact
-const BOUNDS = 4;
+const PLAYER_R = 0.3;
+const DOOR_W = 1.6; // doorway and corridor width
+const DOOR_H = 2.6;
+const CORRIDOR_LEN = 12;
+const CORRIDOR_END = 5 + CORRIDOR_LEN;
 
 const artworks = [
     { title: 'Sternennacht', artist: 'Vincent van Gogh', year: '1889', description: 'Ein ikonisches Meisterwerk des Post-Impressionismus, das den Nachthimmel über Saint-Rémy-de-Provence zeigt.', position: [-4.9, 2, 0], rotation: [0, PI / 2, 0], image: '/art/starry-night.jpg' },
@@ -53,12 +57,12 @@ function pointLight(parent: THREE.Object3D, color: string, intensity: number, di
 }
 
 // plaque text drawn to a canvas instead of shipping a font engine
-function labelTexture(text: string) {
+function labelTexture(text: string, color = '#ffd700') {
     const c = document.createElement('canvas');
     c.width = 512;
     c.height = 96;
     const ctx = c.getContext('2d')!;
-    ctx.fillStyle = '#ffd700';
+    ctx.fillStyle = color;
     ctx.font = '40px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -85,7 +89,7 @@ function start() {
     scene.fog = new THREE.Fog('#3a3a5a', 15, 35);
 
     const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 100);
-    camera.position.set(0, 1.6, BOUNDS);
+    camera.position.set(0, 1.6, 4);
     scene.add(camera);
 
     // global lights
@@ -102,9 +106,14 @@ function start() {
     mesh(scene, new THREE.PlaneGeometry(10, 10), mat('#6b4c3a', { roughness: 0.8, transparent: true, opacity: 0.4 }), [0, 0.01, 0], [-PI / 2, 0, 0]);
     mesh(scene, new THREE.PlaneGeometry(10, 10), mat('#3d3d5c', { roughness: 0.9 }), [0, 5, 0], [PI / 2, 0, 0]);
     const wallGeo = new THREE.PlaneGeometry(10, 5);
-    for (const [pos, rotY, color] of [[[0, 2.5, -5], 0, '#4a3f5c'], [[0, 2.5, 5], PI, '#4a3f5c'], [[-5, 2.5, 0], PI / 2, '#524560'], [[5, 2.5, 0], -PI / 2, '#524560']] as [V3, number, string][]) {
+    for (const [pos, rotY, color] of [[[0, 2.5, -5], 0, '#4a3f5c'], [[-5, 2.5, 0], PI / 2, '#524560'], [[5, 2.5, 0], -PI / 2, '#524560']] as [V3, number, string][]) {
         mesh(scene, wallGeo, mat(color, { roughness: 0.85 }), pos, [0, rotY, 0], 'receive');
     }
+    // front wall, built around the doorway; double-sided so the corridor sees it too
+    const frontMat = mat('#4a3f5c', { roughness: 0.85, side: THREE.DoubleSide });
+    const sideW = 5 - DOOR_W / 2;
+    for (const sx of [-1, 1]) mesh(scene, new THREE.PlaneGeometry(sideW, 5), frontMat, [sx * (DOOR_W / 2 + sideW / 2), 2.5, 5], [0, PI, 0], 'receive');
+    mesh(scene, new THREE.PlaneGeometry(DOOR_W, 5 - DOOR_H), frontMat, [0, (5 + DOOR_H) / 2, 5], [0, PI, 0]);
 
     // wall trim, bottom and crown
     const trimGeo = new THREE.BoxGeometry(10, 0.3, 0.1);
@@ -139,10 +148,69 @@ function start() {
         mesh(g, new THREE.BoxGeometry(0.55, 0.3, 0.55), marbleLight, [0, 4.8, 0], undefined, 'cast');
     }
 
-    // center pedestal with vase
-    mesh(scene, new THREE.CylinderGeometry(0.8, 1, 0.8, 8), marble, [0, 0.4, 0], undefined, 'cast');
-    mesh(scene, new THREE.CylinderGeometry(0.6, 0.6, 0.1, 8), mat('#d4c4a8', { roughness: 0.4, metalness: 0.2 }), [0, 0.85, 0]);
-    mesh(scene, new THREE.CylinderGeometry(0.15, 0.25, 0.6, 8), mat('#6b4c3a', { roughness: 0.4, metalness: 0.1 }), [0, 1.2, 0]);
+    // collision: walkable floor areas and blocking furniture, all as [minX, maxX, minZ, maxZ]
+    // already grown/shrunk by the player radius
+    const walkable = [
+        [-4, 4, -4, 4],
+        [-DOOR_W / 2 + PLAYER_R, DOOR_W / 2 - PLAYER_R, 3.9, CORRIDOR_END - 1], // stop short of the exit door so it stays in view
+    ];
+    const blockers: number[][] = [];
+    const block = (x: number, z: number, halfW: number, halfD: number) =>
+        blockers.push([x - halfW - PLAYER_R, x + halfW + PLAYER_R, z - halfD - PLAYER_R, z + halfD + PLAYER_R]);
+    const inside = (x: number, z: number, [x0, x1, z0, z1]: number[]) => x >= x0 && x <= x1 && z >= z0 && z <= z1;
+    const free = (x: number, z: number) => walkable.some((r) => inside(x, z, r)) && !blockers.some((r) => inside(x, z, r));
+
+    // black leather couch facing the back wall, coffee table in front
+    const leather = mat('#141414', { roughness: 0.35, metalness: 0.15 });
+    const darkWood = mat('#3b2a1e', { roughness: 0.6 });
+    const couch = group(scene, [0, 0, 0.5]);
+    mesh(couch, new THREE.BoxGeometry(2.2, 0.22, 0.9), leather, [0, 0.21, 0], undefined, 'cast');
+    mesh(couch, new THREE.BoxGeometry(2.2, 0.6, 0.22), leather, [0, 0.6, 0.34], undefined, 'cast');
+    for (const sx of [-1, 1]) {
+        mesh(couch, new THREE.BoxGeometry(0.2, 0.5, 0.9), leather, [sx, 0.45, 0], undefined, 'cast');
+        mesh(couch, new THREE.BoxGeometry(0.88, 0.16, 0.68), leather, [sx * 0.45, 0.4, -0.08]);
+        mesh(couch, new THREE.BoxGeometry(0.88, 0.42, 0.16), leather, [sx * 0.45, 0.68, 0.16], [-0.15, 0, 0]);
+        for (const sz of [-1, 1]) mesh(couch, new THREE.CylinderGeometry(0.035, 0.03, 0.1, 6), darkWood, [sx, 0.05, sz * 0.38]);
+    }
+    mesh(couch, new THREE.BoxGeometry(0.34, 0.34, 0.12), mat('#b8862b', { roughness: 0.9 }), [-0.68, 0.62, 0.02], [-0.2, 0.3, 0.1]);
+    block(0, 0.5, 1.1, 0.45);
+
+    const table = group(scene, [0, 0, -0.7]);
+    mesh(table, new THREE.BoxGeometry(1.2, 0.05, 0.6), darkWood, [0, 0.4, 0], undefined, 'cast');
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) mesh(table, new THREE.BoxGeometry(0.05, 0.38, 0.05), darkWood, [sx * 0.55, 0.19, sz * 0.25]);
+    block(0, -0.7, 0.6, 0.3);
+
+    // doorway frame; the entry door stands open against the wall, the exit door is closed
+    function door(z: number, open: boolean) {
+        const g = group(scene, [0, 0, z]);
+        for (const sx of [-1, 1]) mesh(g, new THREE.BoxGeometry(0.12, DOOR_H, 0.16), darkWood, [sx * (DOOR_W / 2 + 0.06), DOOR_H / 2, -0.05]);
+        mesh(g, new THREE.BoxGeometry(DOOR_W + 0.24, 0.12, 0.16), darkWood, [0, DOOR_H + 0.06, -0.05]);
+        const leafMat = mat('#5a3d2b', { roughness: 0.55, emissive: '#ffd700', emissiveIntensity: 0 });
+        const hinge = group(g, [-DOOR_W / 2, 0, -0.06], [0, open ? PI * 0.95 : 0, 0]);
+        mesh(hinge, new THREE.BoxGeometry(DOOR_W - 0.04, DOOR_H - 0.04, 0.06), leafMat, [DOOR_W / 2, DOOR_H / 2, 0]);
+        for (const y of [0.75, 1.85]) mesh(hinge, new THREE.BoxGeometry(DOOR_W - 0.4, 0.8, 0.02), darkWood, [DOOR_W / 2, y, -0.035]);
+        mesh(hinge, new THREE.SphereGeometry(0.05, 8, 8), mat('#c9a86c', { roughness: 0.3, metalness: 0.7 }), [DOOR_W - 0.15, 1.05, -0.06]);
+        return { g, leafMat };
+    }
+    door(5, true);
+
+    // corridor behind the front wall, exit door at its end
+    const corridorMid = (5 + CORRIDOR_END) / 2;
+    const CORRIDOR_H = 3;
+    mesh(scene, new THREE.PlaneGeometry(DOOR_W, CORRIDOR_LEN), mat('#4a1c1c', { roughness: 0.95 }), [0, 0, corridorMid], [-PI / 2, 0, 0], 'receive');
+    mesh(scene, new THREE.PlaneGeometry(DOOR_W, CORRIDOR_LEN), mat('#3d3d5c', { roughness: 0.9 }), [0, CORRIDOR_H, corridorMid], [PI / 2, 0, 0]);
+    for (const sx of [-1, 1]) mesh(scene, new THREE.PlaneGeometry(CORRIDOR_LEN, CORRIDOR_H), mat('#524560', { roughness: 0.85 }), [sx * DOOR_W / 2, CORRIDOR_H / 2, corridorMid], [0, -sx * PI / 2, 0], 'receive');
+    mesh(scene, new THREE.PlaneGeometry(DOOR_W, CORRIDOR_H), mat('#4a3f5c', { roughness: 0.85 }), [0, CORRIDOR_H / 2, CORRIDOR_END], [0, PI, 0]);
+    for (const f of [0.3, 0.75]) {
+        const z = 5 + CORRIDOR_LEN * f;
+        mesh(scene, new THREE.BoxGeometry(0.5, 0.05, 0.5), mat('#fffae6', { emissive: '#ffeaa7', emissiveIntensity: 0.8 }), [0, CORRIDOR_H - 0.03, z]);
+        pointLight(scene, '#ffe8c0', 1.2, 8, [0, CORRIDOR_H - 0.3, z]);
+    }
+    const exit = door(CORRIDOR_END, false);
+    const exitDoor = { exit: true, leafMat: exit.leafMat };
+    exit.g.userData.target = exitDoor;
+    mesh(exit.g, new THREE.BoxGeometry(0.9, 0.25, 0.05), new THREE.MeshBasicMaterial({ color: '#0b3d1a' }), [0, DOOR_H + 0.3, -0.05]);
+    mesh(exit.g, new THREE.PlaneGeometry(0.9, 0.17), new THREE.MeshBasicMaterial({ map: labelTexture('AUSGANG', '#4ade80'), transparent: true }), [0, DOOR_H + 0.3, -0.08], [0, PI, 0]);
 
     // central hanging lamp
     const hanging = group(scene, [0, 4.2, 0]);
@@ -204,6 +272,7 @@ function start() {
         mesh(glow, new THREE.CylinderGeometry(0.24, 0.29, 0.26, 8), glowMat, [0, 0.1, 0]);
         mesh(glow, new THREE.CylinderGeometry(0.07, 0.07, 1.62, 8), glowMat, [0, 0.9, 0]);
         mesh(glow, new THREE.ConeGeometry(0.35, 0.48, 8), glowMat, [0, 1.8, 0]);
+        block(p[0], p[2], 0.25, 0.25);
         const lamp = { on: true, shade, bulb, light, glow };
         g.userData.target = lamp;
         return lamp;
@@ -251,8 +320,7 @@ function start() {
     const held = (...codes: string[]) => codes.some((c) => keys.has(c));
     type Lamp = (typeof lamps)[number];
     type Painting = (typeof paintings)[number];
-    let aimed: Lamp | Painting | undefined;
-    const isLamp = (t: Lamp | Painting | undefined): t is Lamp => !!t && 'glow' in t;
+    let aimed: Lamp | Painting | typeof exitDoor | undefined;
     const raycaster = new THREE.Raycaster(undefined, undefined, 0, REACH);
     const screenCenter = new THREE.Vector2();
     // walls and pillars block the ray, the held glass doesn't
@@ -304,8 +372,10 @@ function start() {
         if (e.code === 'Escape') closeModal();
         if (!modal.hidden || e.repeat || (e.code !== 'KeyE' && e.code !== 'Space')) return;
         e.preventDefault();
-        if (isLamp(aimed)) toggleLamp(aimed);
-        else if (aimed) openModal(aimed.artwork);
+        if (!aimed) return;
+        if ('glow' in aimed) toggleLamp(aimed);
+        else if ('artwork' in aimed) openModal(aimed.artwork);
+        else location.href = '/';
     });
     addEventListener('keyup', (e) => keys.delete(e.code));
     addEventListener('blur', () => keys.clear());
@@ -317,6 +387,7 @@ function start() {
 
     const forward = new THREE.Vector3();
     const right = new THREE.Vector3();
+    const step = new THREE.Vector3();
     let last = 0;
     let time = 0;
     renderer.setAnimationLoop((t) => {
@@ -331,9 +402,11 @@ function start() {
             walking = f !== 0 || r !== 0;
             camera.getWorldDirection(forward).setY(0).normalize();
             right.crossVectors(forward, camera.up);
-            camera.position.addScaledVector(forward, f * MOVE_SPEED * dt).addScaledVector(right, r * MOVE_SPEED * dt);
-            camera.position.x = THREE.MathUtils.clamp(camera.position.x, -BOUNDS, BOUNDS);
-            camera.position.z = THREE.MathUtils.clamp(camera.position.z, -BOUNDS, BOUNDS);
+            step.set(0, 0, 0).addScaledVector(forward, f * MOVE_SPEED * dt).addScaledVector(right, r * MOVE_SPEED * dt);
+            // per axis, so you slide along walls and furniture instead of sticking
+            const { x, z } = camera.position;
+            if (free(x + step.x, z)) camera.position.x += step.x;
+            if (free(camera.position.x, z + step.z)) camera.position.z += step.z;
         }
 
         // whatever the crosshair points at first, if it's interactive
@@ -348,9 +421,10 @@ function start() {
             p.spot.intensity = on ? 1.5 : 0.8;
         }
         for (const l of lamps) l.glow.visible = l === aimed;
+        exitDoor.leafMat.emissiveIntensity += ((aimed === exitDoor ? 0.25 : 0) - exitDoor.leafMat.emissiveIntensity) * 0.1;
         glowMat.opacity = 0.35 + Math.sin(time * 4) * 0.15;
 
-        const text = isLamp(aimed) ? `Lampe ${aimed.on ? 'ausschalten' : 'einschalten'}` : aimed ? 'Ansehen' : '';
+        const text = !aimed ? '' : 'glow' in aimed ? `Lampe ${aimed.on ? 'ausschalten' : 'einschalten'}` : 'artwork' in aimed ? 'Ansehen' : 'Galerie verlassen';
         if (hint.dataset.text !== text) {
             hint.dataset.text = $('hint-text').textContent = text;
             hint.hidden = !text;
