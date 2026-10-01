@@ -74,7 +74,16 @@ function labelTexture(text: string, color = '#ffd700') {
 
 // --- scene ----------------------------------------------------------------
 
-function start() {
+const nextFrame = () => new Promise(requestAnimationFrame);
+function loadingStatus(text: string, percent: number) {
+    $('loading-text').textContent = text;
+    $('loading-bar').style.width = `${percent}%`;
+}
+
+async function start() {
+    // let the loading screen paint before the synchronous scene build blocks the thread
+    loadingStatus('Baue Galerie auf', 5);
+    await nextFrame();
     const container = $('gallery');
     const renderer = new THREE.WebGLRenderer({ antialias: false });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
@@ -220,7 +229,11 @@ function start() {
     pointLight(hanging, '#fff8e7', 2, 10, [0, -0.1, 0], true);
 
     // paintings
-    const loader = new THREE.TextureLoader();
+    // tracks every texture load so the loading screen knows when the scene is complete
+    const manager = new THREE.LoadingManager();
+    const loaded = new Promise<void>((resolve) => (manager.onLoad = resolve));
+    manager.onProgress = (_url, done, total) => loadingStatus(`Lade Kunstwerke ${done}/${total}`, 10 + (60 * done) / total);
+    const loader = new THREE.TextureLoader(manager);
     // unit-size geometry, scaled to the image's aspect ratio once it has loaded
     const frameGeo = new THREE.BoxGeometry(1, 1, 0.1);
     const canvasGeo = new THREE.PlaneGeometry(1, 1);
@@ -390,6 +403,12 @@ function start() {
     const step = new THREE.Vector3();
     let last = 0;
     let time = 0;
+    const loading = $('loading');
+    await loaded;
+    loadingStatus('Bereite Shader vor', 75);
+    await nextFrame();
+    await renderer.compileAsync(scene, camera); // compile shaders up front, no stutter on the first frames
+    loadingStatus('Rendere Szene', 95);
     renderer.setAnimationLoop((t) => {
         const dt = Math.min((t - last) / 1000, 0.1);
         last = t;
@@ -438,10 +457,12 @@ function start() {
         item.rotation.set(0.05, 0, 0.1 + (walking ? Math.sin(time * 8) * 0.05 : 0));
 
         renderer.render(scene, camera);
+        if (!loading.hidden) loading.hidden = true; // after the first frame is drawn
     });
 }
 
 $('start-btn').addEventListener('click', () => {
     $('start').hidden = true;
+    $('loading').hidden = false;
     start();
 }, { once: true });

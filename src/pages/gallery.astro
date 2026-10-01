@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import GalleryControls from '../components/GalleryControls.astro';
 // standalone page: the fullscreen canvas doesn't fit Base's banners and nav
 const corner = 'absolute size-6 border-(--primary)';
 ---
@@ -30,11 +31,7 @@ const corner = 'absolute size-6 border-(--primary)';
 
         <div class="pointer-events-none absolute bottom-4 left-4 z-20 rounded border border-(--border) bg-(--card)/80 p-3 text-xs text-(--muted)">
             <div class="mb-2 font-bold text-(--primary)">STEUERUNG</div>
-            <div class="grid grid-cols-2 gap-x-4 gap-y-1">
-                <span>W/A/S/D</span><span class="text-(--fg)">Bewegen</span>
-                <span>Maus ziehen</span><span class="text-(--fg)">Umsehen</span>
-                <span>E oder Leertaste</span><span class="text-(--fg)">Interagieren</span>
-            </div>
+            <GalleryControls />
         </div>
 
         <!-- crosshair -->
@@ -52,7 +49,8 @@ const corner = 'absolute size-6 border-(--primary)';
         <div id="modal" hidden class="absolute inset-0 z-30 flex items-center justify-center bg-(--bg)/80 backdrop-blur-sm">
             <div class="relative mx-4 max-w-2xl rounded-lg border-2 border-(--primary) bg-(--card) p-6">
                 <button data-close aria-label="Schließen" class="absolute top-2 right-2 rounded px-2 text-xl text-(--muted) hover:bg-(--border)">×</button>
-                <img id="modal-img" class="mx-auto mb-4 max-h-[60svh] rounded border-2 border-(--border) [image-rendering:pixelated]" alt="">
+                <!-- same CORS mode as the three.js texture load, so the cached image is reused -->
+                <img id="modal-img" crossorigin="anonymous" class="mx-auto mb-4 max-h-[60svh] rounded border-2 border-(--border) [image-rendering:pixelated]" alt="">
                 <h2 id="modal-title" class="mb-1 text-xl font-bold text-(--primary)"></h2>
                 <p id="modal-meta" class="mb-3 text-sm text-(--accent)"></p>
                 <p id="modal-desc" class="mb-4 text-sm leading-relaxed"></p>
@@ -76,15 +74,21 @@ const corner = 'absolute size-6 border-(--primary)';
                     <p class="font-bold text-(--fg)">MISSION:</p>
                     <p>Erkunde die virtuelle Kunstgalerie und entdecke Meisterwerke der Kunstgeschichte in einer immersiven 3D-Umgebung.</p>
                     <p class="pt-3 text-(--primary)">STEUERUNG:</p>
-                    <p>W/A/S/D - Bewegen</p>
-                    <p>Maus click + ziehen - Umsehen</p>
-                    <p>E - Mit Objekten interagieren</p>
+                    <GalleryControls />
                 </div>
 
                 <button id="start-btn" class="w-full rounded bg-(--primary) py-4 text-lg font-bold tracking-widest text-black hover:opacity-90">START GAME</button>
                 <p class="mt-4 text-xs text-(--accent)">Benötigt eine Tastatur zum Laufen.</p>
                 <a href="/" class="mt-2 inline-block text-xs text-(--muted) hover:underline">← Zurück zu Missing Link</a>
             </div>
+        </div>
+
+        <div id="loading" hidden class="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-(--bg)">
+            <p class="text-lg font-bold tracking-widest text-(--primary)">LADE GALERIE<span class="animate-pulse">_</span></p>
+            <div class="h-3 w-64 rounded border border-(--primary) p-0.5">
+                <div id="loading-bar" class="h-full w-0 bg-(--primary) transition-[width]"></div>
+            </div>
+            <p id="loading-text" class="text-xs text-(--muted)">&nbsp;</p>
         </div>
     </div>
 
