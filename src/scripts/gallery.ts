@@ -401,7 +401,7 @@ async function start() {
     }
 
     // debris: tossed items and glass shards fly with gravity and stay where they land
-    type Debris = { obj: THREE.Object3D; v: THREE.Vector3; spin: THREE.Vector3; restY: number; resting: boolean; item?: ItemId };
+    type Debris = { obj: THREE.Object3D; v: THREE.Vector3; spin: THREE.Vector3; restY: number; resting: boolean; item?: ItemId; bounces?: number };
     const tossed: Debris[] = [];
     const shards: Debris[] = [];
     const rand = (min: number, max: number) => min + Math.random() * (max - min);
@@ -422,7 +422,7 @@ async function start() {
         const list = d.item ? tossed : shards;
         list.push(d);
         if (d.item && tossed.length > 12) removeItem(tossed[0]);
-        if (!d.item && shards.length > 200) scene.remove(shards.shift()!.obj); // shards share geometry, nothing to dispose
+        if (!d.item && shards.length > 300) scene.remove(shards.shift()!.obj); // shards share geometry, nothing to dispose
     }
 
     function toss() {
@@ -435,18 +435,19 @@ async function start() {
         launch({ obj, v, spin: randomSpin(14), restY: ITEMS[equipped].lyingY, resting: false, item: equipped });
     }
 
-    const shardGeo = new THREE.TetrahedronGeometry(0.03);
+    const shardGeo = new THREE.TetrahedronGeometry(0.045);
     const shardMats = new Map<string, THREE.Material>();
     function shatter(d: Debris) {
         removeItem(d);
         const color = ITEMS[d.item!].shard;
-        if (!shardMats.has(color)) shardMats.set(color, mat(color, { transparent: true, opacity: 0.6, roughness: 0.05, metalness: 0.3 }));
-        for (let i = 0; i < 14; i++) {
+        if (!shardMats.has(color)) shardMats.set(color, mat(color, { transparent: true, opacity: 0.85, roughness: 0.05, metalness: 0.3, emissive: color, emissiveIntensity: 0.35 }));
+        for (let i = 0; i < 30; i++) {
             const m = new THREE.Mesh(shardGeo, shardMats.get(color)!);
-            m.scale.set(rand(0.5, 1.5), 0.15, rand(0.5, 1.5)); // flat splinters
+            m.scale.set(rand(0.5, 1.6), 0.3, rand(0.5, 1.6)); // flat splinters
             m.position.copy(d.obj.position);
-            const v = d.v.clone().multiplyScalar(0.4).add(new THREE.Vector3(rand(-2, 2), rand(1, 3.5), rand(-2, 2)));
-            launch({ obj: m, v, spin: randomSpin(15), restY: 0.005, resting: false });
+            // cartoonishly violent burst
+            const v = d.v.clone().multiplyScalar(0.3).add(new THREE.Vector3(rand(-5, 5), rand(2, 6), rand(-5, 5)));
+            launch({ obj: m, v, spin: randomSpin(30), restY: 0.005, resting: false });
         }
     }
 
@@ -616,15 +617,23 @@ async function start() {
             // bounce off walls (per axis) and the ceiling
             const p = d.obj.position;
             const bottom = p.y - d.restY;
+            let hit = false;
             if (debrisFree(p.x + d.v.x * dt, p.z, bottom)) p.x += d.v.x * dt;
-            else d.v.x *= -0.7;
+            else {
+                d.v.x *= -0.7;
+                hit = true;
+            }
             if (debrisFree(p.x, p.z + d.v.z * dt, bottom)) p.z += d.v.z * dt;
-            else d.v.z *= -0.7;
+            else {
+                d.v.z *= -0.7;
+                hit = true;
+            }
             p.y += d.v.y * dt;
             const ceiling = p.z > 5 ? 3 : 5; // corridor is lower than the room
             if (p.y > ceiling - 0.1) {
                 p.y = ceiling - 0.1;
                 d.v.y = -Math.abs(d.v.y) * 0.5;
+                hit = true;
             }
             d.obj.rotation.x += d.spin.x * dt;
             d.obj.rotation.y += d.spin.y * dt;
@@ -635,11 +644,17 @@ async function start() {
                 if (d.v.y < -2.5) {
                     // hop along the floor until it runs out of energy
                     d.v.set(d.v.x * 0.7, -d.v.y * 0.45, d.v.z * 0.7);
-                    continue;
+                    hit = true;
+                } else {
+                    d.obj.rotation.set(0, rand(0, PI * 2), 0); // shards lie flat
+                    if (d.item) d.obj.rotateX(PI / 2); // items on their side
+                    d.resting = true;
                 }
-                d.obj.rotation.set(0, rand(0, PI * 2), 0); // shards lie flat
-                if (d.item) d.obj.rotateX(PI / 2); // items on their side
-                d.resting = true;
+            }
+            // every bounce makes the next one likelier to break it
+            if (hit && d.item) {
+                d.bounces = (d.bounces ?? 0) + 1;
+                if (Math.random() < 0.25 * d.bounces) shatter(d);
             }
         }
 
