@@ -2,6 +2,13 @@
 import '../styles/global.css';
 import MovingText from '../components/MovingText.astro';
 const { title } = Astro.props;
+const pages = [
+  { href: '/', label: 'Home' },
+  { href: '/join-ml.html', label: 'Join ML' },
+];
+// dev serves /join-ml, the build serves /join-ml.html and /index.html
+const normalize = (path) => path.replace(/(index)?\.html$/, '');
+const current = normalize(Astro.url.pathname);
 const banner = 'fixed left-0 h-[50px] flex items-center whitespace-nowrap bg-[url(/img/construction-area.png)]';
 ---
 <!DOCTYPE html>
@@ -16,6 +23,16 @@ const banner = 'fixed left-0 h-[50px] flex items-center whitespace-nowrap bg-[ur
     <div class={`${banner} top-0`}>
         <MovingText direction="left-to-right" />
     </div>
+
+    <nav class="fixed top-[50px] left-0 z-10 w-full flex gap-6 px-4 py-2 bg-black text-white font-demi-oblique uppercase">
+        {pages.map(({ href, label }) => (
+            <a
+                href={href}
+                aria-current={normalize(href) === current ? 'page' : undefined}
+                class="hover:underline aria-[current=page]:text-yellow-300"
+            >{label}</a>
+        ))}
+    </nav>
 
     <div class="size-full flex justify-center items-center bg-[url(/img/stripes.gif)]">
         <slot />
