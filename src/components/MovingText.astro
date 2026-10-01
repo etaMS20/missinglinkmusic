@@ -1,0 +1,7 @@
+---
+interface Props { direction: 'left-to-right' | 'right-to-left' }
+const { direction } = Astro.props;
+const text = 'CONSTRUCTION AREA - '.repeat(60);
+const animation = direction === 'left-to-right' ? 'animate-left-to-right' : 'animate-right-to-left';
+---
+<h1 class={`relative font-demi-oblique text-xl font-bold ${animation}`}>{text}</h1>

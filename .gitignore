@@ -6,3 +6,9 @@
 *.launch
 .settings/
 *.sublime-workspace
+node_modules/
+dist/
+.astro/
+
+# MCP tooling
+.playwright-mcp/

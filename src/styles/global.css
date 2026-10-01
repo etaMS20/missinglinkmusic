@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Eurostile LT Std";
+  src: url("/font/EurostileLTStd.otf");
+}
+
+@font-face {
+  font-family: "Eurostile LT Std Demi Oblique";
+  src: url("/font/EurostileLTStd-DemiOblique.otf");
+}
+
+@theme {
+  --font-sans: "Eurostile LT Std", monospace;
+  --font-demi-oblique: "Eurostile LT Std Demi Oblique", monospace;
+
+  --animate-right-to-left: right-to-left 120s linear infinite;
+  --animate-left-to-right: left-to-right 120s linear infinite;
+
+  @keyframes right-to-left {
+    from { transform: translateX(0%); }
+    to { transform: translateX(-50%); }
+  }
+  @keyframes left-to-right {
+    from { transform: translateX(-50%); }
+    to { transform: translateX(0%); }
+  }
+}
