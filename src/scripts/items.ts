@@ -54,7 +54,7 @@ export const ITEMS: Record<ItemId, ItemDef> = {
             const g = group();
             g.scale.setScalar(0.15);
             const pts = FAUST_PROFILE.map((r, i) => new THREE.Vector2(r * 0.00345, -0.6 + (i * 536 * 0.00345) / (FAUST_PROFILE.length - 1)));
-            mesh(g, new THREE.LatheGeometry(pts, 48, -Math.PI / 2), mat('#ffffff', { map: faustTexture(), roughness: 0.2 }));
+            mesh(g, new THREE.LatheGeometry(pts, 48, -Math.PI / 2), mat('#ffffff', { map: faustTexture(), roughness: 0.2, side: THREE.DoubleSide })); // inside shows through the open neck
             return g;
         },
     },
