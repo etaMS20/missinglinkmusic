@@ -8,6 +8,7 @@ export interface ItemDef {
     name: string;
     icon: string;
     lyingY: number; // height of the model's origin above the floor when it lies on its side
+    shard: string; // glass color of the shards when it breaks
     build: () => THREE.Group; // origin = where the hand grips it, scaled for first-person view
 }
 
@@ -18,6 +19,7 @@ export const ITEMS: Record<ItemId, ItemDef> = {
         name: 'Weinglas',
         icon: '🍷',
         lyingY: 0.07,
+        shard: '#dfeff5',
         build() {
             const g = group();
             g.scale.setScalar(0.15);
@@ -35,6 +37,7 @@ export const ITEMS: Record<ItemId, ItemDef> = {
         name: 'Bierflasche',
         icon: '🍺',
         lyingY: 0.045,
+        shard: '#5a3410',
         build() {
             const g = group();
             g.scale.setScalar(0.15);

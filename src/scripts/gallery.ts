@@ -10,6 +10,7 @@ const EYE = 1.6; // eye height above the feet
 const GRAVITY = 20;
 const JUMP_V = 6.3; // ~1m jump, enough for the couch backrest
 const STEP = 0.15; // ledges this low are walked onto without jumping
+const BREAK_FORCE = 6; // kicks harder than this shatter the glass; only reachable while sprinting
 const PAINTING_MAX = 1.6; // longest side of a canvas, frames follow the image ratio
 const REACH = 3.5; // how far the crosshair can interact
 const PLAYER_R = 0.3;
@@ -351,16 +352,24 @@ async function start() {
     type Pose = { pos: V3; rot: V3 };
     const REST: Pose = { pos: [0.35, -0.35, -0.5], rot: [0.05, 0, 0.1] };
     const MOUTH: Pose = { pos: [0.08, -0.16, -0.32], rot: [0.7, 0, 0.2] };
-    const MOUTH_TILTED: Pose = { pos: [0.08, -0.13, -0.3], rot: [1.5, 0, 0.25] };
-    const WINDUP: Pose = { pos: [0.45, -0.12, -0.45], rot: [-0.4, 0, -0.2] };
-    const THROWN: Pose = { pos: [0.25, -0.2, -0.75], rot: [0.6, 0, 0.3] };
+    const SIP: Pose = { pos: [0.08, -0.14, -0.31], rot: [1.1, 0, 0.22] };
+    const MOUTH_TILTED: Pose = { pos: [0.08, -0.12, -0.3], rot: [1.6, 0, 0.25] };
+    const SHOULDER: Pose = { pos: [0.32, 0.05, -0.05], rot: [-1.3, 0, -0.4] }; // flicked up and back past the head
     const POCKET: Pose = { pos: [0.4, -1.0, -0.4], rot: [0.3, 0, 0.4] };
-    const ANIMS = {
-        // drink it empty, toss it, pull a fresh one out of the pocket
-        drink: { keys: [[0, REST], [0.35, MOUTH], [1.05, MOUTH_TILTED], [1.25, WINDUP], [1.4, THROWN], [1.75, POCKET], [2.25, REST]] as [number, Pose][], drain: [0.35, 1.05], release: 1.33, swap: 1.75 },
+    type Anim = { keys: [number, Pose][]; drain: [number, number, number, number][]; release: number | null; swap: number };
+    const ANIMS: Record<'drink' | 'swap', Anim> = {
+        // two quick sips, one long gulp, over the shoulder with it, fresh one from the pocket
+        drink: {
+            keys: [[0, REST], [0.25, MOUTH], [0.4, SIP], [0.55, MOUTH], [0.7, SIP], [0.85, MOUTH], [1.6, MOUTH_TILTED], [1.72, SHOULDER], [1.95, POCKET], [2.4, REST]],
+            drain: [[0.25, 0.4, 1, 0.85], [0.55, 0.7, 0.85, 0.7], [0.85, 1.6, 0.7, 0]], // [from t, to t, from level, to level]
+            release: 1.7,
+            swap: 1.95,
+        },
         // switch to another item from the inventory
-        swap: { keys: [[0, REST], [0.35, POCKET], [0.85, REST]] as [number, Pose][], drain: null, release: null, swap: 0.35 },
+        swap: { keys: [[0, REST], [0.35, POCKET], [0.85, REST]], drain: [], release: null, swap: 0.35 },
     };
+    const fillAt = (drain: Anim['drain'], t: number) =>
+        drain.reduce((level, [t0, t1, from, to]) => (t <= t0 ? level : from + (to - from) * Math.min(1, (t - t0) / (t1 - t0))), 1);
     let anim: { kind: keyof typeof ANIMS; t: number; next: ItemId; released: boolean; swapped: boolean } | null = null;
     const smooth = (x: number) => x * x * (3 - 2 * x);
     function animPose(keyframes: [number, Pose][], t: number): Pose {
@@ -373,28 +382,73 @@ async function start() {
         return { pos: mix(a.pos, b.pos), rot: mix(a.rot, b.rot) };
     }
 
-    // tossed items fly with gravity and stay where they land
-    const thrownItems: { obj: THREE.Object3D; v: THREE.Vector3; spin: THREE.Vector3; lyingY: number; resting: boolean }[] = [];
+    // debris: tossed items and glass shards fly with gravity and stay where they land
+    type Debris = { obj: THREE.Object3D; v: THREE.Vector3; spin: THREE.Vector3; restY: number; resting: boolean; item?: ItemId };
+    const tossed: Debris[] = [];
+    const shards: Debris[] = [];
+    const rand = (min: number, max: number) => min + Math.random() * (max - min);
+    const randomSpin = (k: number) => new THREE.Vector3(rand(-k, k), rand(-k, k), rand(-k, k));
+    function removeItem(d: Debris) {
+        tossed.splice(tossed.indexOf(d), 1);
+        scene.remove(d.obj);
+        d.obj.traverse((o) => {
+            if (o instanceof THREE.Mesh) {
+                o.geometry.dispose();
+                (o.material as THREE.Material).dispose();
+            }
+        });
+    }
+    // ponytail: oldest items/shards vanish past these caps, raise them if a messier floor is wanted
+    function launch(d: Debris) {
+        scene.add(d.obj);
+        const list = d.item ? tossed : shards;
+        list.push(d);
+        if (d.item && tossed.length > 12) removeItem(tossed[0]);
+        if (!d.item && shards.length > 200) scene.remove(shards.shift()!.obj); // shards share geometry, nothing to dispose
+    }
+
     function toss() {
         const obj = ITEMS[equipped].build();
         setFill(obj, 0);
         holder.children[0].getWorldPosition(obj.position);
         holder.children[0].getWorldQuaternion(obj.quaternion);
-        scene.add(obj);
-        const dir = camera.getWorldDirection(new THREE.Vector3());
-        const v = dir.multiplyScalar(4.5).add(new THREE.Vector3(0, 2.5, 0)).addScaledVector(right, 0.6);
-        const spin = new THREE.Vector3(Math.random() * 10 - 5, Math.random() * 6 - 3, Math.random() * 10 - 5);
-        thrownItems.push({ obj, v, spin, lyingY: ITEMS[equipped].lyingY, resting: false });
-        // ponytail: oldest tossed items vanish past 12, raise the cap if a messier floor is wanted
-        if (thrownItems.length > 12) {
-            const old = thrownItems.shift()!.obj;
-            scene.remove(old);
-            old.traverse((o) => {
-                if (o instanceof THREE.Mesh) {
-                    o.geometry.dispose();
-                    (o.material as THREE.Material).dispose();
-                }
-            });
+        // backwards over the right shoulder
+        const v = forward.clone().multiplyScalar(-rand(2.5, 3.5)).addScaledVector(right, rand(0.3, 0.9)).setY(rand(2.5, 3.5));
+        launch({ obj, v, spin: randomSpin(8), restY: ITEMS[equipped].lyingY, resting: false, item: equipped });
+    }
+
+    const shardGeo = new THREE.TetrahedronGeometry(0.03);
+    const shardMats = new Map<string, THREE.Material>();
+    function shatter(d: Debris) {
+        removeItem(d);
+        const color = ITEMS[d.item!].shard;
+        if (!shardMats.has(color)) shardMats.set(color, mat(color, { transparent: true, opacity: 0.6, roughness: 0.05, metalness: 0.3 }));
+        for (let i = 0; i < 14; i++) {
+            const m = new THREE.Mesh(shardGeo, shardMats.get(color)!);
+            m.scale.set(rand(0.5, 1.5), 0.15, rand(0.5, 1.5)); // flat splinters
+            m.position.copy(d.obj.position);
+            const v = d.v.clone().multiplyScalar(0.4).add(new THREE.Vector3(rand(-2, 2), rand(1, 3.5), rand(-2, 2)));
+            launch({ obj: m, v, spin: randomSpin(15), restY: 0.005, resting: false });
+        }
+    }
+
+    // walking into a lying item kicks it, with a random amount of oomph
+    function kick(speed: number) {
+        if (speed < 0.5) return;
+        for (const d of [...tossed]) {
+            if (!d.resting || Math.abs(d.obj.position.y - feet) > 0.5) continue;
+            const dx = d.obj.position.x - camera.position.x;
+            const dz = d.obj.position.z - camera.position.z;
+            const dist = Math.hypot(dx, dz) || 1;
+            if (dist > PLAYER_R + 0.15) continue;
+            const force = speed * rand(0.6, 1.6);
+            d.v.set((dx / dist) * force, force * rand(0.3, 0.7), (dz / dist) * force);
+            if (force > BREAK_FORCE) {
+                shatter(d);
+                continue;
+            }
+            d.spin = randomSpin(force * 3);
+            d.resting = false;
         }
     }
 
@@ -510,6 +564,7 @@ async function start() {
             const { x, z } = camera.position;
             if (free(x + step.x, z, feet)) camera.position.x += step.x;
             if (free(camera.position.x, z + step.z, feet)) camera.position.z += step.z;
+            kick(Math.hypot(camera.position.x - x, camera.position.z - z) / dt);
         }
 
         // gravity, jumping and standing on furniture
@@ -535,27 +590,26 @@ async function start() {
         landDip *= Math.exp(-dt * 10);
         camera.position.y = feet + EYE + Math.sin(stride * 2) * bobAmp - landDip;
 
-        // tossed items
-        for (const th of thrownItems) {
-            if (th.resting) continue;
-            th.v.y -= GRAVITY * dt;
-            const { x, z } = th.obj.position;
-            th.obj.position.addScaledVector(th.v, dt);
-            if (!onFloor(th.obj.position.x, th.obj.position.z, 0.75)) {
-                th.obj.position.x = x; // hit a wall: drop straight down
-                th.obj.position.z = z;
-                th.v.x = th.v.z = 0;
+        // tossed items and shards in flight
+        for (const d of [...tossed, ...shards]) {
+            if (d.resting) continue;
+            d.v.y -= GRAVITY * dt;
+            const { x, z } = d.obj.position;
+            d.obj.position.addScaledVector(d.v, dt);
+            if (!onFloor(d.obj.position.x, d.obj.position.z, 0.75)) {
+                d.obj.position.x = x; // hit a wall: drop straight down
+                d.obj.position.z = z;
+                d.v.x = d.v.z = 0;
             }
-            th.obj.rotation.x += th.spin.x * dt;
-            th.obj.rotation.y += th.spin.y * dt;
-            th.obj.rotation.z += th.spin.z * dt;
-            const floorY = groundAt(th.obj.position.x, th.obj.position.z, 0) + th.lyingY;
-            if (th.obj.position.y <= floorY) {
-                th.obj.position.y = floorY;
-                th.obj.rotation.set(0, 0, 0);
-                th.obj.rotateY(Math.random() * PI * 2);
-                th.obj.rotateX(PI / 2); // on its side
-                th.resting = true;
+            d.obj.rotation.x += d.spin.x * dt;
+            d.obj.rotation.y += d.spin.y * dt;
+            d.obj.rotation.z += d.spin.z * dt;
+            const floorY = groundAt(d.obj.position.x, d.obj.position.z, 0) + d.restY;
+            if (d.obj.position.y <= floorY) {
+                d.obj.position.y = floorY;
+                d.obj.rotation.set(0, rand(0, PI * 2), 0); // shards lie flat
+                if (d.item) d.obj.rotateX(PI / 2); // items on their side
+                d.resting = true;
             }
         }
 
@@ -588,7 +642,7 @@ async function start() {
             const pose = animPose(a.keys, anim.t);
             item.position.set(...pose.pos);
             item.rotation.set(...pose.rot);
-            if (a.drain && !anim.released) setFill(holder.children[0], 1 - THREE.MathUtils.clamp((anim.t - a.drain[0]) / (a.drain[1] - a.drain[0]), 0, 1));
+            if (a.drain.length && !anim.released) setFill(holder.children[0], fillAt(a.drain, anim.t));
             if (a.release !== null && !anim.released && anim.t >= a.release) {
                 anim.released = true;
                 toss();
